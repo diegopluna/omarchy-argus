@@ -4,6 +4,8 @@ Argus is a bar widget for the [Omarchy](https://omarchy.org) shell that shows li
 system stats in the bar — you pick which — and opens a tabbed panel with the
 full picture.
 
+![Argus panel](preview.png)
+
 ## Bar metrics (all selectable)
 
 CPU usage, CPU temperature, RAM usage, GPU usage, GPU temperature, VRAM
