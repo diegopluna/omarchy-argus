@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.diegopluna.argus",
+  "name": "Argus",
+  "version": "0.1.0",
+  "author": "Diego Peter",
+  "license": "MIT",
+  "description": "CPU, RAM, GPU, disk, network, and temperature stats in the bar, with a full system panel and selectable bar metrics.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Argus",
+    "description": "Pick which system stats (CPU, RAM, GPU, disk, network, temperatures) appear in the bar; click for the full panel.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "show": ["cpu", "ram", "cputemp"],
+      "intervalSec": 2,
+      "diskMount": "/"
+    },
+    "schema": [
+      {
+        "key": "intervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 1,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 2
+      },
+      {
+        "key": "diskMount",
+        "type": "string",
+        "label": "Disk mount for the bar metric",
+        "defaultValue": "/",
+        "description": "Mount point whose usage the bar's disk metric shows."
+      }
+    ]
+  }
+}
