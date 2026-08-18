@@ -4,7 +4,7 @@ Argus is a bar widget for the [Omarchy](https://omarchy.org) shell that shows li
 system stats in the bar — you pick which — and opens a tabbed panel with the
 full picture.
 
-![Argus panel](preview.png)
+![Argus in the bar](screenshots/bar.png)
 
 ## Bar metrics (all selectable)
 
@@ -21,6 +21,13 @@ the panel's **BAR** tab; the choice persists to `~/.config/omarchy/shell.json`.
 - **NET** — per-interface download/upload rates
 - **TEMP** — every hwmon sensor with friendly names (CPU, GPU, NVMe with drive model, RAM, Wi-Fi, …)
 - **BAR** — toggles for which metrics the bar shows
+
+| | |
+|---|---|
+| ![CPU tab](screenshots/tab-cpu.png) | ![GPU tab](screenshots/tab-gpu.png) |
+| ![TEMP tab](screenshots/tab-temp.png) | ![BAR tab](screenshots/tab-bar.png) |
+| ![MEM tab](screenshots/tab-mem.png) | ![NET tab](screenshots/tab-net.png) |
+| ![DISK tab](screenshots/tab-disk.png) | |
 
 ## Interactions
 
