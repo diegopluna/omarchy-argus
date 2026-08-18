@@ -24,8 +24,10 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
   readonly property var shownKeys: Model.normalizeShow(setting("show", Model.DEFAULT_SHOW))
-  readonly property string displayText: sys.ready ? Model.barText(shownKeys, sys.barData) : ""
-  readonly property var verticalLines: sys.ready ? Model.barLines(shownKeys, sys.barData) : []
+  // The placeholder icon also covers the not-yet-sampled window right after
+  // the shell starts, so the widget is clickable from the first frame.
+  readonly property string displayText: sys.ready ? Model.barText(shownKeys, sys.barData) : Model.PLACEHOLDER_ICON
+  readonly property var verticalLines: sys.ready ? Model.barLines(shownKeys, sys.barData) : [Model.PLACEHOLDER_ICON]
 
   readonly property var tabs: ["CPU", "MEM", "GPU", "DISK", "NET", "TEMP", "BAR"]
   property string tab: "CPU"

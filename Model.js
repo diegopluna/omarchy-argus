@@ -429,6 +429,12 @@ function metricValue(key, data) {
   }
 }
 
+// Shown when no metric renders a segment (all deselected, or none of the
+// selected ones has data). Without it the widget would collapse to zero
+// width and the panel — the only place to re-enable metrics — would become
+// unreachable from the bar.
+var PLACEHOLDER_ICON = "\u{f04c5}" // 󰓅
+
 // Horizontal bar label: "󰻠 12%  󰍛 61%  󰔏 56°".
 function barText(showKeys, data) {
   var segments = []
@@ -439,7 +445,7 @@ function barText(showKeys, data) {
     if (value === "") continue
     segments.push(metric.icon === "" ? value : metric.icon + " " + value)
   }
-  return segments.join("  ")
+  return segments.length > 0 ? segments.join("  ") : PLACEHOLDER_ICON
 }
 
 // Vertical bar lines: icon line then value line per metric.
@@ -453,7 +459,7 @@ function barLines(showKeys, data) {
     if (metric.icon !== "") lines.push(metric.icon)
     lines.push(value)
   }
-  return lines
+  return lines.length > 0 ? lines : [PLACEHOLDER_ICON]
 }
 
 if (typeof module !== "undefined") {
@@ -478,6 +484,7 @@ if (typeof module !== "undefined") {
     fmtTemp: fmtTemp,
     metricValue: metricValue,
     barText: barText,
-    barLines: barLines
+    barLines: barLines,
+    PLACEHOLDER_ICON: PLACEHOLDER_ICON
   }
 }

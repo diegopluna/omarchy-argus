@@ -80,6 +80,13 @@ assert.strictEqual(nvSample.gpus.length, 2)
 assert.strictEqual(nvSample.gpus[0].label, "GPU 0")
 assert.strictEqual(nvSample.gpus[1].label, "GPU 0 (NVIDIA)")
 
+// With nothing selected (or nothing renderable) the bar shows a placeholder
+// icon so the panel stays reachable.
+assert.strictEqual(Model.barText([], barData), Model.PLACEHOLDER_ICON)
+assert.strictEqual(Model.barText(["gputemp"], { gpu: null }), Model.PLACEHOLDER_ICON)
+assert.deepStrictEqual(Model.barLines([], barData), [Model.PLACEHOLDER_ICON])
+assert.ok(Model.barText(["cpu"], barData) !== Model.PLACEHOLDER_ICON)
+
 const toggled = Model.toggleShow(["cpu", "ram"], "disk")
 assert.deepStrictEqual(toggled, ["cpu", "ram", "disk"])
 assert.deepStrictEqual(Model.toggleShow(toggled, "ram"), ["cpu", "disk"])
