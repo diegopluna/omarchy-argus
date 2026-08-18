@@ -432,8 +432,8 @@ function metricValue(key, data) {
 // Shown when no metric renders a segment (all deselected, or none of the
 // selected ones has data). Without it the widget would collapse to zero
 // width and the panel — the only place to re-enable metrics — would become
-// unreachable from the bar.
-var PLACEHOLDER_ICON = "\u{f04c5}" // 󰓅
+// unreachable from the bar. The eye of Argus, naturally.
+var PLACEHOLDER_ICON = "\u{f0208}" // 󰈈
 
 // Horizontal bar label: "󰻠 12%  󰍛 61%  󰔏 56°".
 function barText(showKeys, data) {
