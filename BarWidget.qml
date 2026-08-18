@@ -84,13 +84,19 @@ Panel {
     }
   }
 
+  // A bare Nerd Font glyph has asymmetric side bearings, so the plain text
+  // label would paint it visibly off-center; when only the placeholder icon
+  // shows, render through OpticalGlyph the way BarIconButton does.
+  readonly property bool placeholderOnly: displayText === Model.PLACEHOLDER_ICON
+
   WidgetButton {
     id: button
     anchors.fill: parent
     bar: root.bar
     text: root.bar && root.bar.vertical ? "" : root.displayText
-    labelVisible: !(root.bar && root.bar.vertical)
+    labelVisible: !(root.bar && root.bar.vertical) && !root.placeholderOnly
     hasVisualContent: root.bar && root.bar.vertical ? root.verticalLines.length > 0 : text !== ""
+    fixedWidth: !(root.bar && root.bar.vertical) && root.placeholderOnly ? Style.bar.iconSlot : -1
     fixedHeight: root.bar && root.bar.vertical ? root.verticalLines.length * Style.bar.iconSlot : -1
     tooltipText: sys.ready
       ? sys.host + " · up " + Model.fmtUptime(sys.uptimeSec) + " · load " + sys.load1.toFixed(2)
@@ -100,6 +106,17 @@ Panel {
       if (b === Qt.RightButton) { if (root.bar) root.bar.run("omarchy-launch-or-focus-tui btop") }
       else if (b === Qt.MiddleButton) sys.refresh()
       else root.toggle()
+    }
+
+    OpticalGlyph {
+      visible: !(root.bar && root.bar.vertical) && root.placeholderOnly
+      anchors.centerIn: parent
+      width: Style.bar.iconCanvas
+      height: Style.bar.iconCanvas
+      text: Model.PLACEHOLDER_ICON
+      fontFamily: button.fontFamily
+      fontSize: Style.bar.iconFont
+      color: button.foreground
     }
 
     Column {
