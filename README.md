@@ -42,6 +42,20 @@ git clone https://github.com/diegopluna/omarchy-argus \
 omarchy plugin enable io.github.diegopluna.argus
 ```
 
+Requires only tools an Omarchy install already has: `bash`, `coreutils`,
+`df`, `lsblk` (util-linux), and `lspci` (pciutils) for GPU names. `btop` is
+optional (right-click launch).
+
+## Uninstall
+
+```bash
+omarchy plugin disable io.github.diegopluna.argus
+rm -rf ~/.config/omarchy/plugins/io.github.diegopluna.argus
+```
+
+Disabling removes the widget from the bar; the only state Argus writes is
+its own entry in `~/.config/omarchy/shell.json`.
+
 ## Settings
 
 Inline settings on the widget's entry in `shell.json`:
