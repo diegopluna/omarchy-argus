@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.diegopluna.argus",
   "name": "Argus",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Diego Peter",
   "license": "MIT",
   "description": "CPU, RAM, GPU, disk, network, and temperature stats in the bar, with a full system panel and selectable bar metrics.",

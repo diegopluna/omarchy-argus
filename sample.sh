@@ -62,3 +62,14 @@ for c in /sys/class/drm/card[0-9] /sys/class/drm/card[0-9][0-9]; do
   gpu_name=$(lspci -s "$pci" 2>/dev/null | head -1 | cut -d: -f3- | sed 's/^[[:space:]]*//')
   echo "${c##*/card}|$busy|$vram_used|$vram_total|$temp|$gpu_name"
 done
+
+echo '###NVIDIA'
+# The proprietary NVIDIA driver exposes no gpu_busy_percent/vram sysfs, so
+# query nvidia-smi instead — but only when the driver is actually loaded
+# (/proc/driver/nvidia exists), so machines with a stray nvidia-smi binary
+# never pay for a failing call.
+if [ -e /proc/driver/nvidia/version ] && command -v nvidia-smi >/dev/null 2>&1; then
+  timeout 3 nvidia-smi \
+    --query-gpu=index,name,utilization.gpu,temperature.gpu,memory.used,memory.total \
+    --format=csv,noheader,nounits 2>/dev/null
+fi

@@ -338,7 +338,7 @@ Panel {
             Text {
               visible: sys.gpus.length === 0
               width: parent.width
-              text: "No supported GPU detected (amdgpu sysfs)."
+              text: "No supported GPU detected (amdgpu sysfs or nvidia-smi)."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
@@ -355,15 +355,15 @@ Panel {
 
                 NameHeader {
                   title: sys.primaryGpu && sys.primaryGpu.card === modelData.card && sys.gpus.length > 1
-                    ? "GPU " + modelData.card + " · PRIMARY"
-                    : "GPU " + modelData.card
+                    ? modelData.label + " · PRIMARY"
+                    : modelData.label
                   name: modelData.name
                 }
 
                 MeterRow {
                   label: "Usage"
                   value: Model.fmtPct(modelData.busy)
-                  fraction: modelData.busy / 100
+                  fraction: (modelData.busy || 0) / 100
                 }
 
                 MeterRow {

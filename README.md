@@ -16,7 +16,7 @@ the panel's **BAR** tab; the choice persists to `~/.config/omarchy/shell.json`.
 
 - **CPU** — processor model, overall usage, per-thread bars, frequency, temperature, load, uptime
 - **MEM** — RAM and swap usage
-- **GPU** — every GPU (amdgpu sysfs): name, usage, VRAM, temperature
+- **GPU** — every GPU (AMD via amdgpu sysfs, NVIDIA via nvidia-smi): name, usage, VRAM, temperature
 - **DISK** — every real filesystem with its physical disk model (LUKS/LVM resolved via lsblk)
 - **NET** — per-interface download/upload rates
 - **TEMP** — every hwmon sensor with friendly names (CPU, GPU, NVMe with drive model, RAM, Wi-Fi, …)
@@ -43,8 +43,9 @@ omarchy plugin enable io.github.diegopluna.argus
 ```
 
 Requires only tools an Omarchy install already has: `bash`, `coreutils`,
-`df`, `lsblk` (util-linux), and `lspci` (pciutils) for GPU names. `btop` is
-optional (right-click launch).
+`df`, `lsblk` (util-linux), and `lspci` (pciutils) for GPU names. On NVIDIA
+systems, `nvidia-smi` (which ships with the driver) provides GPU stats.
+`btop` is optional (right-click launch).
 
 ## Uninstall
 
@@ -78,5 +79,10 @@ omarchy-shell io.github.diegopluna.argus tab TEMP
 
 `/proc` (stat, meminfo, loadavg, uptime, net/dev, cpuinfo), `df`, `lsblk`,
 `/sys/class/hwmon` for temperatures, and `/sys/class/drm/card*/device` for
-GPU busy/VRAM (amdgpu; no NVIDIA driver support yet). One short bash sampler
-runs per refresh; usage deltas are computed in QML.
+AMD GPU busy/VRAM (amdgpu). NVIDIA GPUs are read through
+`nvidia-smi --query-gpu=... --format=csv,noheader,nounits`, invoked only
+when `/proc/driver/nvidia/version` shows the driver is loaded, guarded by a
+3-second timeout; `[N/A]` fields (e.g. utilization on some GPUs) degrade
+gracefully. Hybrid AMD iGPU + NVIDIA dGPU systems list both, with the
+bar's GPU metrics following the card with the most VRAM. One short bash
+sampler runs per refresh; usage deltas are computed in QML.

@@ -52,6 +52,34 @@ assert.ok(barText.includes("12%"), "bar shows cpu")
 assert.ok(barText.includes("61%"), "bar shows ram")
 assert.ok(barText.includes("1.86"), "bar shows load")
 
+// NVIDIA parsing (fixture-based: nvidia-smi csv,noheader,nounits output).
+const nv = Model.parseNvidia([
+  "0, NVIDIA GeForce RTX 3080, 5, 45, 1024, 10240",
+  "1, NVIDIA RTX A6000, [N/A], 38, 512, 49140"
+])
+assert.strictEqual(nv.length, 2)
+assert.strictEqual(nv[0].card, "nv0")
+assert.strictEqual(nv[0].name, "NVIDIA GeForce RTX 3080")
+assert.strictEqual(nv[0].busy, 5)
+assert.strictEqual(nv[0].celsius, 45)
+assert.strictEqual(nv[0].vramUsed, 1024 * 1048576)
+assert.strictEqual(nv[0].vramTotal, 10240 * 1048576)
+assert.ok(Number.isNaN(nv[1].busy), "[N/A] utilization -> NaN")
+assert.strictEqual(nv[1].celsius, 38)
+// Bar hides the gpu segment when utilization is unsupported.
+assert.strictEqual(Model.metricValue("gpu", { gpu: nv[1] }), "")
+assert.strictEqual(Model.metricValue("gpu", { gpu: nv[0] }), "5%")
+assert.strictEqual(Model.metricValue("gputemp", { gpu: nv[0] }), "45°")
+assert.strictEqual(Model.metricValue("vram", { gpu: nv[0] }), "10%")
+// nvidia-smi dGPU outranks an amdgpu iGPU by VRAM size.
+const hybrid = Model.primaryGpu([{ card: "0", vramTotal: 512 * 1048576 }, nv[0]])
+assert.strictEqual(hybrid.card, "nv0")
+// Sample section merges even when the NVIDIA section is empty (this machine).
+const nvSample = Model.parseSample("###GPU\n0|25|100|200|48000|Vendor [X] Foo [Radeon RX]\n###NVIDIA\n0, NVIDIA GeForce RTX 4070, 12, 51, 2048, 12282")
+assert.strictEqual(nvSample.gpus.length, 2)
+assert.strictEqual(nvSample.gpus[0].label, "GPU 0")
+assert.strictEqual(nvSample.gpus[1].label, "GPU 0 (NVIDIA)")
+
 const toggled = Model.toggleShow(["cpu", "ram"], "disk")
 assert.deepStrictEqual(toggled, ["cpu", "ram", "disk"])
 assert.deepStrictEqual(Model.toggleShow(toggled, "ram"), ["cpu", "disk"])

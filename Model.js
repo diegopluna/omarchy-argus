@@ -69,7 +69,7 @@ function parseSample(text) {
     net: parseNet(sections.NET || []),
     disks: attachDiskModels(parseDf(sections.DF || []), diskModels, diskLinks),
     temps: parseTemps(sections.TEMP || []),
-    gpus: parseGpus(sections.GPU || [])
+    gpus: parseGpus(sections.GPU || []).concat(parseNvidia(sections.NVIDIA || []))
   }
 }
 
@@ -257,11 +257,41 @@ function parseGpus(lines) {
     if (parts.length < 5) continue
     result.push({
       card: parts[0],
+      label: "GPU " + parts[0],
       busy: Number(parts[1]) || 0,
       vramUsed: Number(parts[2]) || 0,
       vramTotal: Number(parts[3]) || 0,
       celsius: parts[4] !== "" ? Number(parts[4]) / 1000 : NaN,
       name: prettyGpuName(parts[5])
+    })
+  }
+  return result
+}
+
+// nvidia-smi --format=csv,noheader,nounits lines:
+//   "0, NVIDIA GeForce RTX 3080, 5, 45, 1024, 10240"
+// (index, name, util %, temp °C, memory used MiB, memory total MiB).
+// Fields can read "[N/A]" or "[Not Supported]"; a comma inside the name is
+// handled by taking the trailing four numeric fields from the end.
+function parseNvidia(lines) {
+  function num(s) {
+    var v = Number(String(s).trim())
+    return isFinite(v) ? v : NaN
+  }
+  var result = []
+  for (var i = 0; i < lines.length; i++) {
+    var f = lines[i].split(",")
+    var n = f.length
+    if (n < 6) continue
+    var index = String(f[0]).trim()
+    result.push({
+      card: "nv" + index,
+      label: "GPU " + index + " (NVIDIA)",
+      busy: num(f[n - 4]),
+      celsius: num(f[n - 3]),
+      vramUsed: (num(f[n - 2]) || 0) * 1048576,
+      vramTotal: (num(f[n - 1]) || 0) * 1048576,
+      name: f.slice(1, n - 4).join(",").trim()
     })
   }
   return result
@@ -389,7 +419,7 @@ function metricValue(key, data) {
     case "cpu": return fmtPct(data.cpuPct)
     case "cputemp": return isFinite(data.cpuTemp) ? fmtTemp(data.cpuTemp) : ""
     case "ram": return fmtPct(data.memPct)
-    case "gpu": return data.gpu ? fmtPct(data.gpu.busy) : ""
+    case "gpu": return data.gpu && isFinite(data.gpu.busy) ? fmtPct(data.gpu.busy) : ""
     case "gputemp": return data.gpu && isFinite(data.gpu.celsius) ? fmtTemp(data.gpu.celsius) : ""
     case "vram": return data.gpu && data.gpu.vramTotal > 0 ? fmtPct(100 * data.gpu.vramUsed / data.gpu.vramTotal) : ""
     case "disk": return data.disk ? fmtPct(100 * data.disk.used / data.disk.size) : ""
@@ -438,6 +468,7 @@ if (typeof module !== "undefined") {
     cpuTemp: cpuTemp,
     tempName: tempName,
     prettyGpuName: prettyGpuName,
+    parseNvidia: parseNvidia,
     primaryGpu: primaryGpu,
     diskFor: diskFor,
     fmtBytes: fmtBytes,
