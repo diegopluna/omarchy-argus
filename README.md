@@ -17,11 +17,11 @@ order in the panel's **BAR** tab; the choice persists to
 
 ## Panel tabs
 
-- **CPU** — processor model, overall usage with sparkline history, per-thread bars, frequency, temperature with session peak, load, uptime
-- **MEM** — RAM usage with sparkline history, swap
-- **GPU** — every GPU (AMD via amdgpu sysfs, NVIDIA via nvidia-smi): name, usage with sparkline history, VRAM, temperature with session peak, power draw
-- **DISK** — every real filesystem with its physical disk model (LUKS/LVM resolved via lsblk), plus live read/write rates per physical disk
-- **NET** — total and per-interface download/upload rates, with download/upload sparklines
+- **CPU** — processor model, overall usage with sparkline history, per-thread bars, frequency, temperature with session peak, load, uptime, PSI pressure, kernel version
+- **MEM** — RAM usage with sparkline history, swap, PSI memory pressure
+- **GPU** — every GPU (AMD via amdgpu sysfs, NVIDIA via nvidia-smi, Intel via hwmon): name, usage with sparkline history, VRAM, temperature with session peak, power draw
+- **DISK** — every real filesystem with its physical disk model (LUKS/LVM resolved via lsblk), live read/write rates per physical disk, PSI I/O pressure
+- **NET** — total and per-interface download/upload rates, with download/upload sparklines; virtual interfaces (VPN tunnels, bridges, veth) are listed but kept out of the totals so VPN traffic isn't counted twice
 - **PROC** — top processes by CPU and by memory
 - **TEMP** — every hwmon sensor with friendly names (CPU, GPU, NVMe with drive model, RAM, Wi-Fi, …), plus fan speeds
 - **BAT** — per-battery charge, status, power draw, health, and time estimate (tab appears only when a system battery exists)
@@ -73,12 +73,18 @@ Inline settings on the widget's entry in `shell.json`:
 | `diskMount` | `/` | Mount point used by the bar's disk metric |
 | `urgentCpuPct` | `90` | CPU/GPU usage % at which the bar segment turns urgent |
 | `urgentMemPct` | `90` | RAM/VRAM usage % at which the bar segment turns urgent |
-| `urgentTempC` | `85` | Temperature (°C) at which temp segments turn urgent |
+| `urgentCpuTempC` | `85` | CPU temperature (°C) threshold |
+| `urgentGpuTempC` | `90` | GPU temperature (°C) threshold |
+| `urgentDriveTempC` | `70` | Drive (NVMe/SATA) temperature (°C) alert threshold |
 | `urgentDiskPct` | `90` | Disk usage % at which the bar segment turns urgent |
 | `alerts` | `"On"` | Desktop notification when a metric stays past its threshold |
 
-Load average turns urgent when the 1-minute load reaches the thread count;
-battery turns urgent at ≤15% while discharging.
+Temperature thresholds are per component — GPUs run hot by design, SSDs
+throttle early. The pre-0.5.0 single `urgentTempC` still works as a
+fallback for the CPU/GPU thresholds. Load average turns urgent when the
+1-minute load reaches the thread count; battery turns urgent at ≤15% while
+discharging. Drive temperature is alert-only (it has no bar segment) and
+watches the hottest NVMe/SATA sensor.
 
 ## Alerts
 
@@ -119,7 +125,10 @@ omarchy-shell io.github.diegopluna.argus tab TEMP
 `/sys/class/power_supply` for batteries (peripheral batteries such as mice
 are filtered out via the sysfs `scope` attribute), and
 `/sys/class/drm/card*/device` for AMD GPU busy/VRAM (amdgpu). NVIDIA GPUs
-are read through `nvidia-smi --query-gpu=... --format=csv,noheader,nounits`,
+are read through `nvidia-smi --query-gpu=... --format=csv,noheader,nounits`
+and Intel GPUs (i915/xe) through their hwmon temperature/power — Intel
+exposes no unprivileged busy counter, so usage is honestly marked
+unavailable rather than shown as zero. nvidia-smi is
 invoked only when `/proc/driver/nvidia/version` shows the driver is loaded,
 guarded by a 3-second timeout; `[N/A]` fields (e.g. utilization on some
 GPUs) degrade gracefully. While every NVIDIA card is runtime-suspended
@@ -133,6 +142,7 @@ multi-monitor setups still sample once. Hardware identity that cannot
 change while the shell runs (hostname, CPU model, disk models, GPU names)
 is sampled once at startup (`sample.sh static`), and top processes are
 sampled only while a panel is open, so `lsblk`/`lspci`/`ps` stay off the
-always-on hot path. GPU power draw comes from amdgpu's hwmon
+always-on hot path. `df` and `lsblk` run under `timeout` so a stale
+network mount degrades one tick instead of freezing the widget. GPU power draw comes from amdgpu's hwmon
 `power1_average` and nvidia-smi's `power.draw`. Usage deltas are computed
 in QML.

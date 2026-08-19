@@ -19,19 +19,25 @@ if [ "$mode" != "dynamic" ]; then
   echo '###CPUNAME'
   grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^[[:space:]]*//'
 
+  echo '###KERNEL'
+  uname -r
+
+  echo '###CHASSIS'
+  cat /sys/class/dmi/id/chassis_type 2>/dev/null
+
   echo '###DISKNAMES'
-  lsblk -dno NAME,MODEL 2>/dev/null
+  timeout 3 lsblk -dno NAME,MODEL 2>/dev/null
 
   echo '###DISKLINKS'
-  lsblk -rno NAME,PKNAME 2>/dev/null
+  timeout 3 lsblk -rno NAME,PKNAME 2>/dev/null
 
   echo '###GPUNAMES'
   for c in /sys/class/drm/card[0-9] /sys/class/drm/card[0-9][0-9]; do
     d="$c/device"
-    [ -r "$d/gpu_busy_percent" ] || continue
+    [ -d "$d" ] || continue
     pci=$(basename "$(readlink -f "$d")" 2>/dev/null)
     name=$(lspci -s "$pci" 2>/dev/null | head -1 | cut -d: -f3- | sed 's/^[[:space:]]*//')
-    echo "${c##*/card}|$name"
+    [ -n "$name" ] && echo "${c##*/card}|$name"
   done
 fi
 
@@ -52,7 +58,20 @@ echo '###NET'
 tail -n +3 /proc/net/dev
 
 echo '###DF'
-df -B1 --output=source,size,used,target -x tmpfs -x devtmpfs -x efivarfs -x overlay -x squashfs 2>/dev/null | tail -n +2
+# timeout: a stale network mount (NFS/sshfs) blocks df forever, which would
+# otherwise freeze sampling permanently.
+timeout 3 df -B1 --output=source,size,used,target -x tmpfs -x devtmpfs -x efivarfs -x overlay -x squashfs 2>/dev/null | tail -n +2
+
+echo '###PSI'
+for r in cpu memory io; do
+  [ -r "/proc/pressure/$r" ] || continue
+  while IFS= read -r line; do echo "$r $line"; done < "/proc/pressure/$r"
+done
+
+echo '###NETPHYS'
+for n in /sys/class/net/*; do
+  [ -e "$n/device" ] && echo "${n##*/}"
+done
 
 echo '###DISKSTATS'
 cat /proc/diskstats 2>/dev/null
@@ -108,6 +127,29 @@ for c in /sys/class/drm/card[0-9] /sys/class/drm/card[0-9][0-9]; do
     break
   done
   echo "${c##*/card}|$busy|$vram_used|$vram_total|$temp|$power"
+done
+
+echo '###GPUINTEL'
+# Intel cards (i915/xe) expose no gpu_busy_percent; hwmon still provides
+# temperature and (on Arc) power, so show what exists.
+for c in /sys/class/drm/card[0-9] /sys/class/drm/card[0-9][0-9]; do
+  d="$c/device"
+  [ -r "$d/vendor" ] || continue
+  [ "$(cat "$d/vendor" 2>/dev/null)" = "0x8086" ] || continue
+  [ -r "$d/gpu_busy_percent" ] && continue
+  temp=""
+  power=""
+  for t in "$d"/hwmon/hwmon*/temp*_input; do
+    [ -r "$t" ] || continue
+    v=$(cat "$t" 2>/dev/null)
+    [ -n "$v" ] && { temp=$v; break; }
+  done
+  for p in "$d"/hwmon/hwmon*/power1_input "$d"/hwmon/hwmon*/power1_average; do
+    [ -r "$p" ] || continue
+    power=$(cat "$p" 2>/dev/null)
+    break
+  done
+  echo "${c##*/card}|$temp|$power"
 done
 
 echo '###NVIDIA'
@@ -175,5 +217,6 @@ for b in /sys/class/power_supply/*; do
     power_now=$(( i / 1000 * (v / 1000) ))
   fi
   model=$(cat "$b/model_name" 2>/dev/null)
-  echo "${b##*/}|$status|$capacity|$energy_now|$energy_full|$energy_design|$power_now|$model"
+  limit=$(cat "$b/charge_control_end_threshold" 2>/dev/null)
+  echo "${b##*/}|$status|$capacity|$energy_now|$energy_full|$energy_design|$power_now|$model|$limit"
 done

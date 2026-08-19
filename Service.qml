@@ -51,6 +51,10 @@ Singleton {
   // Derived state the UI binds to.
   property string host: ""
   property string cpuName: ""
+  property string kernel: ""
+  property int chassisType: 0
+  property var psi: ({})
+  property var driveTemp: null
   property real cpuPct: 0
   property var corePcts: []
   property real cpuMhz: 0
@@ -125,7 +129,7 @@ Singleton {
     corePcts = cores
 
     var elapsedSec = (_prevTime > 0 ? (now - _prevTime) : 0) / 1000
-    var rates = Model.netRates(_prevNet, parsed.net, elapsedSec)
+    var rates = Model.netRates(_prevNet, parsed.net, elapsedSec, parsed.netPhys)
     netDown = rates.down
     netUp = rates.up
     netIfaces = rates.perIface
@@ -137,6 +141,10 @@ Singleton {
 
     host = parsed.host
     cpuName = parsed.cpuName
+    kernel = parsed.kernel
+    chassisType = parsed.chassisType
+    psi = parsed.psi
+    driveTemp = Model.hottestDrive(parsed.temps)
     cpuMhz = parsed.load.cpuMhz
     load1 = parsed.load.load1
     load5 = parsed.load.load5
@@ -217,7 +225,7 @@ Singleton {
       if (streak !== alertHoldTicks) continue
       if (now - (_alertNotifiedAt[key] || 0) < alertCooldownMs) continue
       _alertNotifiedAt[key] = now
-      var critical = key === "cputemp" || key === "gputemp" || key === "bat"
+      var critical = key === "cputemp" || key === "gputemp" || key === "drivetemp" || key === "bat"
       Quickshell.execDetached([
         "notify-send", "-a", "Argus", "-u", critical ? "critical" : "normal",
         "Argus", Model.alertText(key, data, th)
@@ -237,7 +245,8 @@ Singleton {
     netUp: netUp,
     load1: load1,
     cores: corePcts.length,
-    battery: battery
+    battery: battery,
+    driveTemp: driveTemp
   })
 
   Timer {

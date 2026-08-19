@@ -159,6 +159,7 @@ Panel {
     fixedHeight: root.bar && root.bar.vertical ? root.verticalLines.length * Style.bar.iconSlot : -1
     tooltipText: Service.ready
       ? Service.host + " · up " + Model.fmtUptime(Service.uptimeSec) + " · load " + Service.load1.toFixed(2)
+        + (Service.battery ? " · bat " + Model.fmtPct(Service.battery.pct) + " " + Service.battery.status.toLowerCase() : "")
       : "Argus"
 
     onPressed: function(b) {
@@ -388,6 +389,16 @@ Panel {
               label: "Uptime"
               value: Service.ready ? Model.fmtUptime(Service.uptimeSec) : ""
             }
+
+            DetailRow {
+              label: "Pressure (PSI, 10s avg)"
+              value: Service.psi.cpu && isFinite(Service.psi.cpu.some) ? "some " + Service.psi.cpu.some.toFixed(1) + "%" : ""
+            }
+
+            DetailRow {
+              label: "Kernel"
+              value: Service.kernel
+            }
           }
 
           // ---- Memory tab
@@ -424,6 +435,13 @@ Panel {
             DetailRow {
               label: "Available"
               value: Service.ready ? Model.fmtBytes(Service.memTotal - Service.memUsed) : ""
+            }
+
+            DetailRow {
+              label: "Pressure (PSI, 10s avg)"
+              value: Service.psi.memory && isFinite(Service.psi.memory.some)
+                ? "some " + Service.psi.memory.some.toFixed(1) + "% · full " + Service.psi.memory.full.toFixed(1) + "%"
+                : ""
             }
           }
 
@@ -476,14 +494,24 @@ Panel {
                 }
 
                 MeterRow {
-                  visible: !modelData.asleep
+                  visible: !modelData.asleep && isFinite(modelData.busy)
                   label: "Usage"
                   value: Model.fmtPct(modelData.busy)
                   fraction: (modelData.busy || 0) / 100
                 }
 
+                Text {
+                  visible: modelData.noBusyCounter === true
+                  width: parent.width
+                  text: "Usage unavailable — this driver exposes no busy counter."
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                }
+
                 Sparkline {
-                  visible: gpuBlock.isPrimary && !modelData.asleep
+                  visible: gpuBlock.isPrimary && !modelData.asleep && isFinite(modelData.busy)
                   width: parent.width
                   values: Service.gpuHist
                   maxValue: 100
@@ -559,6 +587,13 @@ Panel {
                 : ""
             }
 
+            DetailRow {
+              label: "Pressure (PSI, 10s avg)"
+              value: Service.psi.io && isFinite(Service.psi.io.some)
+                ? "some " + Service.psi.io.some.toFixed(1) + "% · full " + Service.psi.io.full.toFixed(1) + "%"
+                : ""
+            }
+
             Repeater {
               model: Service.ioDisks
 
@@ -619,7 +654,7 @@ Panel {
               DetailRow {
                 required property var modelData
                 visible: modelData.total > 0
-                label: modelData.iface
+                label: modelData.iface + (modelData.virtual ? " · virtual, not in totals" : "")
                 value: "\u{f0045} " + Model.fmtBytes(modelData.down) + "/s   \u{f005d} " + Model.fmtBytes(modelData.up) + "/s"
               }
             }
@@ -702,6 +737,18 @@ Panel {
                 value: modelData.rpm + " RPM"
               }
             }
+
+            Text {
+              visible: Service.ready
+                && Model.isDesktopChassis(Service.chassisType)
+                && !Model.hasMotherboardSensors(Service.temps, Service.fans)
+              width: parent.width
+              text: "Motherboard fans and sensors need the board's Super I/O kernel driver, which does not auto-load — usually `modprobe nct6775` (`it87` for ITE chips). See the Argus README, section Fans."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
           }
 
           // ---- Battery tab (only reachable when a system battery exists)
@@ -740,6 +787,11 @@ Panel {
                 DetailRow {
                   label: "Status"
                   value: modelData.status
+                }
+
+                DetailRow {
+                  label: "Charge limit"
+                  value: isFinite(modelData.chargeLimit) ? Model.fmtPct(modelData.chargeLimit) : ""
                 }
 
                 DetailRow {

@@ -4,6 +4,33 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] — 2026-08-19
+
+### Added
+- Per-component temperature thresholds: `urgentCpuTempC` (85),
+  `urgentGpuTempC` (90), and `urgentDriveTempC` (70) replace the single
+  `urgentTempC`, which remains honored as a CPU/GPU fallback.
+- Drive-temperature alert: watches the hottest NVMe/SATA sensor
+  (alert-only, no bar segment; critical urgency).
+- Intel GPU support (i915/xe): name, temperature, and power via hwmon;
+  usage is marked unavailable rather than shown as zero, since Intel
+  exposes no unprivileged busy counter.
+- PSI pressure rows (`/proc/pressure`, 10-second averages) in the CPU,
+  MEM, and DISK tabs.
+- TEMP-tab hint on desktop machines whose motherboard Super I/O sensor
+  driver is not loaded, pointing at the README's Fans section.
+- Battery charge-limit row (`charge_control_end_threshold`), so a battery
+  parked at 80% doesn't look like a bug.
+- Kernel version in the CPU tab; battery status in the bar tooltip.
+
+### Changed
+- Virtual network interfaces (VPN tunnels, bridges, veth) are excluded
+  from the bar's throughput totals — VPN traffic previously counted twice
+  — and flagged in the NET tab. All-virtual environments still count
+  everything.
+- `df` and `lsblk` run under `timeout`: a stale NFS/sshfs mount now costs
+  one degraded tick instead of freezing the widget permanently.
+
 ## [0.4.0] — 2026-08-19
 
 ### Added

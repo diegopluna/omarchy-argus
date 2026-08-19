@@ -194,10 +194,37 @@ assert.strictEqual(
   "Battery at 11% (threshold 15%)")
 assert.ok(Model.ALERT_KEYS.indexOf("load") === -1, "load never alerts")
 
-// Urgency thresholds.
+// Urgency thresholds — per-component temps, with the legacy single
+// urgentTempC still honored as a CPU/GPU fallback.
 const th = Model.thresholdsFrom({ urgentCpuPct: 80 })
 assert.strictEqual(th.cpuPct, 80)
-assert.strictEqual(th.tempC, Model.DEFAULT_THRESHOLDS.tempC)
+assert.strictEqual(th.cpuTempC, Model.DEFAULT_THRESHOLDS.cpuTempC)
+assert.strictEqual(th.gpuTempC, 90)
+assert.strictEqual(th.driveTempC, 70)
+const perComponent = Model.thresholdsFrom({ urgentCpuTempC: 80, urgentGpuTempC: 100, urgentDriveTempC: 60 })
+assert.strictEqual(perComponent.cpuTempC, 80)
+assert.strictEqual(perComponent.gpuTempC, 100)
+assert.strictEqual(perComponent.driveTempC, 60)
+const legacy = Model.thresholdsFrom({ urgentTempC: 75 })
+assert.strictEqual(legacy.cpuTempC, 75, "legacy urgentTempC covers cpu")
+assert.strictEqual(legacy.gpuTempC, 75, "legacy urgentTempC covers gpu")
+assert.strictEqual(Model.thresholdsFrom({ urgentTempC: 75, urgentGpuTempC: 95 }).gpuTempC, 95, "specific beats legacy")
+assert.strictEqual(Model.metricUrgent("gputemp", { gpu: { celsius: 92, busy: 1 } }, perComponent), false)
+assert.strictEqual(Model.metricUrgent("gputemp", { gpu: { celsius: 101, busy: 1 } }, perComponent), true)
+// Drive-temperature alert (alert-only, never a bar segment).
+const hotDrive = Model.hottestDrive([
+  { chip: "k10temp", label: "Tctl", celsius: 80, device: "" },
+  { chip: "nvme", label: "Composite", celsius: 72, device: "ADATA FALCON" },
+  { chip: "nvme", label: "Composite", celsius: 55, device: "KINGSTON" }
+])
+assert.strictEqual(hotDrive.celsius, 72)
+assert.strictEqual(Model.metricUrgent("drivetemp", { driveTemp: hotDrive }, null), true)
+assert.strictEqual(Model.metricUrgent("drivetemp", { driveTemp: hotDrive }, perComponent), true)
+assert.strictEqual(Model.metricUrgent("drivetemp", { driveTemp: null }, null), false)
+assert.strictEqual(
+  Model.alertText("drivetemp", { driveTemp: hotDrive }, null),
+  "Drive temperature (ADATA FALCON) at 72° (threshold 70°)")
+assert.ok(Model.ALERT_KEYS.indexOf("drivetemp") !== -1)
 assert.strictEqual(Model.metricUrgent("cpu", { cpuPct: 85 }, th), true)
 assert.strictEqual(Model.metricUrgent("cpu", { cpuPct: 85 }, null), false, "default threshold is 90")
 assert.strictEqual(Model.metricUrgent("load", { load1: 17, cores: 16 }, null), true)
@@ -225,6 +252,62 @@ assert.deepStrictEqual(Model.normalizeShow(["disk", "cpu", "bogus"]), ["disk", "
 assert.deepStrictEqual(Model.moveShow(["cpu", "ram", "disk"], "disk", -1), ["cpu", "disk", "ram"])
 assert.deepStrictEqual(Model.moveShow(["cpu", "ram"], "cpu", -1), ["cpu", "ram"], "clamped at top")
 assert.deepStrictEqual(Model.moveShow(["cpu", "ram"], "ram", 1), ["cpu", "ram"], "clamped at bottom")
+
+// PSI parsing (avg10 of each resource).
+const psi = Model.parsePsi([
+  "cpu some avg10=1.50 avg60=0.31 avg300=0.41 total=1",
+  "cpu full avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+  "memory some avg10=0.10 avg60=0.00 avg300=0.00 total=1",
+  "memory full avg10=0.05 avg60=0.00 avg300=0.00 total=1",
+  "io some avg10=2.20 avg60=0.30 avg300=0.39 total=1"
+])
+assert.strictEqual(psi.cpu.some, 1.5)
+assert.strictEqual(psi.memory.full, 0.05)
+assert.strictEqual(psi.io.some, 2.2)
+assert.ok(sample.psi.cpu && isFinite(sample.psi.cpu.some), "live PSI parsed")
+
+// Virtual interfaces stay out of the totals but keep their per-iface rows.
+const phys = Model.parseNetPhys(["eno1"])
+const netA = [{ iface: "eno1", rx: 0, tx: 0 }, { iface: "tun0", rx: 0, tx: 0 }]
+const netB = [{ iface: "eno1", rx: 1000, tx: 100 }, { iface: "tun0", rx: 900, tx: 90 }]
+const filtered = Model.netRates(netA, netB, 1, phys)
+assert.strictEqual(filtered.down, 1000, "tunnel excluded from totals")
+assert.strictEqual(filtered.perIface.length, 2)
+assert.strictEqual(filtered.perIface[1].virtual, true)
+// All-virtual environments (containers) fall back to counting everything.
+const allVirtual = Model.netRates(netA, netB, 1, Model.parseNetPhys([]))
+assert.strictEqual(allVirtual.down, 1900)
+if (!CI) assert.ok(Object.keys(sample.netPhys).length > 0, "live physical interfaces found")
+
+// Intel GPUs: temp/power from hwmon, usage honestly unavailable.
+const intel = Model.parseIntelGpus(["1|45000|8000000", "2||"], { "1": "Vendor [Arc A770]" })
+assert.strictEqual(intel.length, 2)
+assert.strictEqual(intel[0].label, "GPU 1 (Intel)")
+assert.strictEqual(intel[0].name, "Arc A770")
+assert.strictEqual(intel[0].celsius, 45)
+assert.strictEqual(intel[0].powerW, 8)
+assert.ok(Number.isNaN(intel[0].busy) && intel[0].noBusyCounter)
+assert.ok(Number.isNaN(intel[1].celsius))
+assert.strictEqual(Model.metricValue("gpu", { gpu: intel[0] }), "", "no busy → bar segment hidden")
+const intelSample = Model.parseSample("###GPUINTEL\n0|41000|5500000\n###NVIDIA\n")
+assert.strictEqual(intelSample.gpus.length, 1)
+
+// Battery charge limit (9th field; absent or 100 → NaN).
+const capped = Model.parseBattery(["BAT0|Not charging|80|45600000|57000000|60500000|0|X|80"])
+assert.strictEqual(capped[0].chargeLimit, 80)
+assert.ok(Number.isNaN(Model.parseBattery(["BAT0|Full|100|1|2|3|0|X|100"])[0].chargeLimit))
+assert.ok(Number.isNaN(Model.parseBattery(["BAT0|Full|100|1|2|3|0|X"])[0].chargeLimit))
+
+// Desktop-without-Super-I/O hint helpers.
+assert.strictEqual(Model.isDesktopChassis(3), true)
+assert.strictEqual(Model.isDesktopChassis(10), false, "laptop chassis")
+assert.strictEqual(Model.hasMotherboardSensors([{ chip: "nct6799" }], []), true)
+assert.strictEqual(Model.hasMotherboardSensors([{ chip: "k10temp" }, { chip: "nvme" }], [{ chip: "amdgpu" }]), false)
+assert.strictEqual(Model.hasMotherboardSensors([], [{ chip: "it8620" }]), true)
+
+// Static identity now includes kernel and chassis.
+assert.ok(merged.kernel.length > 0, "kernel version parsed")
+assert.ok(merged.chassisType > 0, "chassis type parsed")
 
 // Sparkline history is fixed-length and NaN-safe.
 let hist = []

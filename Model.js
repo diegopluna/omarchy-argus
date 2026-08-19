@@ -20,9 +20,10 @@ var METRICS = [
 var DEFAULT_SHOW = ["cpu", "ram", "cputemp"]
 
 // Bar segments turn urgent-colored at these values; each is overridable via
-// the widget's inline settings (urgentCpuPct, urgentMemPct, urgentTempC,
-// urgentDiskPct).
-var DEFAULT_THRESHOLDS = { cpuPct: 90, memPct: 90, tempC: 85, diskPct: 90 }
+// the widget's inline settings (urgentCpuPct, urgentMemPct, urgentCpuTempC,
+// urgentGpuTempC, urgentDriveTempC, urgentDiskPct). Different silicon has
+// different comfort zones: GPUs run hot by design, SSDs throttle early.
+var DEFAULT_THRESHOLDS = { cpuPct: 90, memPct: 90, cpuTempC: 85, gpuTempC: 90, driveTempC: 70, diskPct: 90 }
 
 var ICON_DOWN = "\u{f0045}" // 󰁅
 var ICON_UP = "\u{f005d}"   // 󰁝
@@ -68,10 +69,15 @@ function thresholdsFrom(settings) {
     return isFinite(n) && n > 0 ? n : fallback
   }
   settings = settings || {}
+  // The pre-0.5.0 single urgentTempC still works as a fallback for the
+  // per-component CPU/GPU thresholds.
+  var legacy = num(settings.urgentTempC, NaN)
   return {
     cpuPct: num(settings.urgentCpuPct, DEFAULT_THRESHOLDS.cpuPct),
     memPct: num(settings.urgentMemPct, DEFAULT_THRESHOLDS.memPct),
-    tempC: num(settings.urgentTempC, DEFAULT_THRESHOLDS.tempC),
+    cpuTempC: num(settings.urgentCpuTempC, isFinite(legacy) ? legacy : DEFAULT_THRESHOLDS.cpuTempC),
+    gpuTempC: num(settings.urgentGpuTempC, isFinite(legacy) ? legacy : DEFAULT_THRESHOLDS.gpuTempC),
+    driveTempC: num(settings.urgentDriveTempC, DEFAULT_THRESHOLDS.driveTempC),
     diskPct: num(settings.urgentDiskPct, DEFAULT_THRESHOLDS.diskPct)
   }
 }
@@ -99,22 +105,53 @@ function parseSample(text) {
   return {
     host: (sections.HOST || [""])[0].trim(),
     cpuName: (sections.CPUNAME || [""])[0].trim(),
+    kernel: (sections.KERNEL || [""])[0].trim(),
+    chassisType: Number((sections.CHASSIS || [""])[0]) || 0,
     cpus: parseStat(sections.STAT || []),
     mem: parseMem(sections.MEM || []),
     load: parseLoad(sections.LOAD || []),
     net: parseNet(sections.NET || []),
+    netPhys: parseNetPhys(sections.NETPHYS || []),
     disks: attachDiskModels(parseDf(sections.DF || []), diskModels, diskLinks),
     diskModels: diskModels,
     diskLinks: diskLinks,
     io: parseDiskstats(sections.DISKSTATS || []),
+    psi: parsePsi(sections.PSI || []),
     temps: parseTemps(sections.TEMP || []),
     fans: parseFans(sections.FAN || []),
-    gpus: parseGpus(sections.GPU || [], gpuNames).concat(nvidiaSuspended ? [] : parseNvidia(nvidiaLines)),
+    gpus: parseGpus(sections.GPU || [], gpuNames)
+      .concat(parseIntelGpus(sections.GPUINTEL || [], gpuNames))
+      .concat(nvidiaSuspended ? [] : parseNvidia(nvidiaLines)),
     nvidiaSuspended: nvidiaSuspended,
     psCpu: parsePs(sections.PSCPU || []),
     psMem: parsePs(sections.PSMEM || []),
     batteries: parseBattery(sections.BAT || [])
   }
+}
+
+// NETPHYS lines are interface names with a backing physical device; used
+// to keep virtual interfaces (veth, docker0, tun/wg) out of the bar's
+// throughput totals, where VPN traffic would be counted twice.
+function parseNetPhys(lines) {
+  var phys = {}
+  for (var i = 0; i < lines.length; i++) {
+    var name = lines[i].trim()
+    if (name !== "") phys[name] = true
+  }
+  return phys
+}
+
+// PSI lines: "cpu some avg10=0.26 avg60=0.31 avg300=0.41 total=…" →
+// { cpu: { some: 0.26, full: NaN }, memory: {…}, io: {…} } using avg10.
+function parsePsi(lines) {
+  var psi = {}
+  for (var i = 0; i < lines.length; i++) {
+    var match = lines[i].match(/^(cpu|memory|io)\s+(some|full)\s+avg10=([\d.]+)/)
+    if (!match) continue
+    if (!psi[match[1]]) psi[match[1]] = { some: NaN, full: NaN }
+    psi[match[1]][match[2]] = Number(match[3])
+  }
+  return psi
 }
 
 // lsblk -dno NAME,MODEL lines → { nvme0n1: "KINGSTON ...", ... }
@@ -329,6 +366,7 @@ function parseBattery(lines) {
     var p = lines[i].split("|")
     if (p.length < 8) continue
     var cap = Number(p[2])
+    var limit = p.length > 8 ? Number(p[8]) : NaN
     result.push({
       name: p[0].trim(),
       status: p[1].trim(),
@@ -337,7 +375,10 @@ function parseBattery(lines) {
       energyFullWh: (Number(p[4]) || 0) / 1e6,
       energyDesignWh: (Number(p[5]) || 0) / 1e6,
       powerW: (Number(p[6]) || 0) / 1e6,
-      model: p.slice(7).join("|").trim()
+      model: p[7].trim(),
+      // A configured charge cap (e.g. 80%) — without surfacing it, a
+      // battery parked at its limit looks like a charging bug.
+      chargeLimit: isFinite(limit) && limit > 0 && limit < 100 ? limit : NaN
     })
   }
   return result
@@ -398,6 +439,28 @@ function parseGpus(lines, names) {
       vramTotal: Number(parts[3]) || 0,
       celsius: parts[4] !== "" ? Number(parts[4]) / 1000 : NaN,
       powerW: parts.length > 5 && parts[5] !== "" ? Number(parts[5]) / 1e6 : NaN,
+      name: prettyGpuName(names && parts[0] in names ? names[parts[0]] : "")
+    })
+  }
+  return result
+}
+
+// GPUINTEL lines: card|temp|power (µW). i915/xe expose no busy counter,
+// so usage is NaN and the panel says so instead of showing zeros.
+function parseIntelGpus(lines, names) {
+  var result = []
+  for (var i = 0; i < lines.length; i++) {
+    var parts = lines[i].split("|")
+    if (parts.length < 3) continue
+    result.push({
+      card: parts[0],
+      label: "GPU " + parts[0] + " (Intel)",
+      busy: NaN,
+      noBusyCounter: true,
+      vramUsed: 0,
+      vramTotal: 0,
+      celsius: parts[1] !== "" ? Number(parts[1]) / 1000 : NaN,
+      powerW: parts[2] !== "" ? Number(parts[2]) / 1e6 : NaN,
       name: prettyGpuName(names && parts[0] in names ? names[parts[0]] : "")
     })
   }
@@ -473,9 +536,15 @@ function cpuUsage(prevCpus, cpus) {
 }
 
 // Total rx/tx bytes-per-second across interfaces between two samples.
-function netRates(prevNet, net, elapsedSec) {
+// With a `phys` set, virtual interfaces (veth, bridges, tun/wg) are kept
+// out of the totals — VPN traffic would otherwise count twice — but stay
+// in perIface, flagged. Without any known physical interface, everything
+// counts (containers/VMs see only virtual NICs).
+function netRates(prevNet, net, elapsedSec, phys) {
   var byIface = {}
   if (prevNet) for (var i = 0; i < prevNet.length; i++) byIface[prevNet[i].iface] = prevNet[i]
+  var anyPhys = false
+  if (phys) for (var p = 0; p < net.length; p++) if (net[p].iface in phys) { anyPhys = true; break }
   var down = 0, up = 0
   var perIface = []
   for (var j = 0; j < net.length; j++) {
@@ -486,9 +555,12 @@ function netRates(prevNet, net, elapsedSec) {
       rx = Math.max(0, (cur.rx - prev.rx) / elapsedSec)
       tx = Math.max(0, (cur.tx - prev.tx) / elapsedSec)
     }
-    down += rx
-    up += tx
-    perIface.push({ iface: cur.iface, down: rx, up: tx, total: cur.rx + cur.tx })
+    var virtual = anyPhys && !(cur.iface in phys)
+    if (!virtual) {
+      down += rx
+      up += tx
+    }
+    perIface.push({ iface: cur.iface, down: rx, up: tx, total: cur.rx + cur.tx, virtual: virtual })
   }
   return { down: down, up: up, perIface: perIface }
 }
@@ -531,6 +603,38 @@ function cpuTemp(temps) {
     }
   }
   return fallback
+}
+
+// The hottest storage-device sensor (NVMe composite, SATA drivetemp), for
+// the drive-temperature alert. Null when no drive exposes one.
+function hottestDrive(temps) {
+  var best = null
+  for (var i = 0; i < temps.length; i++) {
+    var t = temps[i]
+    if (t.chip !== "nvme" && t.chip !== "drivetemp") continue
+    if (!best || t.celsius > best.celsius) best = t
+  }
+  return best
+}
+
+// Whether any hwmon chip looks like a motherboard Super I/O / EC sensor.
+// Used with the chassis type to hint desktop users at the missing kernel
+// driver (nct6775 & friends do not auto-load).
+var MOTHERBOARD_CHIP = /^nct|^it8|^w83|^f71|^asus/
+
+function hasMotherboardSensors(temps, fans) {
+  var lists = [temps || [], fans || []]
+  for (var l = 0; l < lists.length; l++) {
+    for (var i = 0; i < lists[l].length; i++) {
+      if (MOTHERBOARD_CHIP.test(lists[l][i].chip)) return true
+    }
+  }
+  return false
+}
+
+// SMBIOS chassis types that mean "a desktop tower with fan headers".
+function isDesktopChassis(type) {
+  return [3, 4, 5, 6, 7].indexOf(Number(type)) !== -1
 }
 
 // The discrete GPU when there is one: the card with the most VRAM.
@@ -678,10 +782,11 @@ function metricUrgent(key, data, th) {
   th = th || DEFAULT_THRESHOLDS
   switch (key) {
     case "cpu": return data.cpuPct >= th.cpuPct
-    case "cputemp": return isFinite(data.cpuTemp) && data.cpuTemp >= th.tempC
+    case "cputemp": return isFinite(data.cpuTemp) && data.cpuTemp >= th.cpuTempC
     case "ram": return data.memPct >= th.memPct
     case "gpu": return !!(data.gpu && !data.gpu.asleep && isFinite(data.gpu.busy) && data.gpu.busy >= th.cpuPct)
-    case "gputemp": return !!(data.gpu && !data.gpu.asleep && isFinite(data.gpu.celsius) && data.gpu.celsius >= th.tempC)
+    case "gputemp": return !!(data.gpu && !data.gpu.asleep && isFinite(data.gpu.celsius) && data.gpu.celsius >= th.gpuTempC)
+    case "drivetemp": return !!(data.driveTemp && isFinite(data.driveTemp.celsius) && data.driveTemp.celsius >= th.driveTempC)
     case "vram": return !!(data.gpu && !data.gpu.asleep && data.gpu.vramTotal > 0 && 100 * data.gpu.vramUsed / data.gpu.vramTotal >= th.memPct)
     case "disk": return !!(data.disk && data.disk.size > 0 && 100 * data.disk.used / data.disk.size >= th.diskPct)
     case "load": return (Number(data.cores) || 0) > 0 && data.load1 >= data.cores
@@ -692,7 +797,8 @@ function metricUrgent(key, data, th) {
 
 // Metrics the alert watchdog evaluates every tick, regardless of which
 // segments the bar shows. Load is deliberately absent — it flaps.
-var ALERT_KEYS = ["cpu", "cputemp", "ram", "gpu", "gputemp", "vram", "disk", "bat"]
+// drivetemp is alert-only: it never renders in the bar.
+var ALERT_KEYS = ["cpu", "cputemp", "ram", "gpu", "gputemp", "vram", "disk", "bat", "drivetemp"]
 
 // One-line notification body for a metric that crossed its threshold, e.g.
 // "CPU temperature at 92° (threshold 85°)".
@@ -704,10 +810,15 @@ function alertText(key, data, th) {
   var limit
   switch (key) {
     case "cpu": value = fmtPct(data.cpuPct); limit = th.cpuPct + "%"; break
-    case "cputemp": value = fmtTemp(data.cpuTemp); limit = th.tempC + "°"; break
+    case "cputemp": value = fmtTemp(data.cpuTemp); limit = th.cpuTempC + "°"; break
     case "ram": value = fmtPct(data.memPct); limit = th.memPct + "%"; break
     case "gpu": value = data.gpu ? fmtPct(data.gpu.busy) : "—"; limit = th.cpuPct + "%"; break
-    case "gputemp": value = data.gpu ? fmtTemp(data.gpu.celsius) : "—"; limit = th.tempC + "°"; break
+    case "gputemp": value = data.gpu ? fmtTemp(data.gpu.celsius) : "—"; limit = th.gpuTempC + "°"; break
+    case "drivetemp":
+      label = "Drive temperature" + (data.driveTemp && data.driveTemp.device ? " (" + data.driveTemp.device + ")" : "")
+      value = data.driveTemp ? fmtTemp(data.driveTemp.celsius) : "—"
+      limit = th.driveTempC + "°"
+      break
     case "vram": value = data.gpu && data.gpu.vramTotal > 0 ? fmtPct(100 * data.gpu.vramUsed / data.gpu.vramTotal) : "—"; limit = th.memPct + "%"; break
     case "disk": value = data.disk ? fmtPct(100 * data.disk.used / data.disk.size) : "—"; limit = th.diskPct + "%"; break
     case "bat": value = data.battery ? fmtPct(data.battery.pct) : "—"; limit = "15%"; break
@@ -783,6 +894,12 @@ if (typeof module !== "undefined") {
     parseFans: parseFans,
     parsePs: parsePs,
     parseBattery: parseBattery,
+    parsePsi: parsePsi,
+    parseNetPhys: parseNetPhys,
+    parseIntelGpus: parseIntelGpus,
+    hottestDrive: hottestDrive,
+    hasMotherboardSensors: hasMotherboardSensors,
+    isDesktopChassis: isDesktopChassis,
     cpuUsage: cpuUsage,
     netRates: netRates,
     ioRates: ioRates,

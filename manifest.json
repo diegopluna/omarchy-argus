@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.diegopluna.argus",
   "name": "Argus",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "author": "Diego Peter",
   "license": "MIT",
   "description": "CPU, RAM, GPU, disk, network, battery, and temperature stats in the bar, with sparkline history, top processes, urgent-threshold highlighting, and a full system panel.",
@@ -64,13 +64,31 @@
         "defaultValue": 90
       },
       {
-        "key": "urgentTempC",
+        "key": "urgentCpuTempC",
         "type": "integer",
-        "label": "Urgent above: temperature (°C)",
+        "label": "Urgent above: CPU temperature (°C)",
         "min": 50,
         "max": 110,
         "step": 5,
         "defaultValue": 85
+      },
+      {
+        "key": "urgentGpuTempC",
+        "type": "integer",
+        "label": "Urgent above: GPU temperature (°C)",
+        "min": 50,
+        "max": 120,
+        "step": 5,
+        "defaultValue": 90
+      },
+      {
+        "key": "urgentDriveTempC",
+        "type": "integer",
+        "label": "Alert above: drive temperature (°C)",
+        "min": 40,
+        "max": 100,
+        "step": 5,
+        "defaultValue": 70
       },
       {
         "key": "urgentDiskPct",
