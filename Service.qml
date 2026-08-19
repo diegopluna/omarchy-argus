@@ -4,7 +4,9 @@ import "Model.js" as Model
 
 // Polls sample.sh on a timer and exposes parsed, delta-derived system data.
 // One instance runs per bar surface; the sampler is a single short-lived
-// bash process per tick.
+// bash process per tick. Hardware identity (hostname, CPU model, disk
+// models, GPU names) is sampled once at startup via `sample.sh static` and
+// merged into every dynamic tick, so lsblk/lspci never run on the hot path.
 Item {
   id: root
 
@@ -17,9 +19,14 @@ Item {
 
   // Raw parsed sample plus previous tick for delta metrics.
   property var sample: null
+  property string _staticText: ""
   property var _prevCpus: null
   property var _prevNet: null
+  property var _prevIo: null
   property double _prevTime: 0
+  // Last awake NVIDIA readings, replayed as "asleep" while the card is
+  // runtime-suspended and the sampler refuses to wake it.
+  property var _lastNvidia: []
 
   // Derived state the UI binds to.
   property string host: ""
@@ -38,12 +45,28 @@ Item {
   property real swapUsed: 0
   property var disks: []
   property var temps: []
+  property var fans: []
   property var gpus: []
   property var primaryGpu: null
+  property bool nvidiaSuspended: false
   property real netDown: 0
   property real netUp: 0
   property var netIfaces: []
+  property real ioRead: 0
+  property real ioWrite: 0
+  property var ioDisks: []
+  property var psCpu: []
+  property var psMem: []
+  property var batteries: []
+  property var battery: null
   property bool ready: false
+
+  // Rolling per-tick history for the panel sparklines (Model.HISTORY_LEN
+  // points, oldest first). Populated only from valid delta ticks.
+  property var cpuHist: []
+  property var memHist: []
+  property var netDownHist: []
+  property var netUpHist: []
 
   readonly property real memPct: memTotal > 0 ? 100 * memUsed / memTotal : 0
   readonly property real swapPct: swapTotal > 0 ? 100 * swapUsed / swapTotal : 0
@@ -51,13 +74,18 @@ Item {
   readonly property string scriptPath: Qt.resolvedUrl("sample.sh").toString().replace(/^file:\/\//, "")
 
   function refresh() {
+    if (_staticText === "") {
+      if (!staticProc.running) staticProc.running = true
+      return
+    }
     if (!proc.running) proc.running = true
   }
 
   function apply(text) {
     var now = Date.now()
-    var parsed = Model.parseSample(text)
+    var parsed = Model.parseSample(_staticText + "\n" + text)
     if (parsed.cpus.length === 0) return
+    var hadPrev = _prevCpus !== null
 
     var usage = Model.cpuUsage(_prevCpus, parsed.cpus)
     var cores = []
@@ -67,10 +95,16 @@ Item {
     }
     corePcts = cores
 
-    var rates = Model.netRates(_prevNet, parsed.net, (_prevTime > 0 ? (now - _prevTime) : 0) / 1000)
+    var elapsedSec = (_prevTime > 0 ? (now - _prevTime) : 0) / 1000
+    var rates = Model.netRates(_prevNet, parsed.net, elapsedSec)
     netDown = rates.down
     netUp = rates.up
     netIfaces = rates.perIface
+
+    var io = Model.ioRates(_prevIo, parsed.io, elapsedSec, parsed.diskModels, parsed.diskLinks)
+    ioRead = io.read
+    ioWrite = io.write
+    ioDisks = io.perDisk
 
     host = parsed.host
     cpuName = parsed.cpuName
@@ -85,12 +119,37 @@ Item {
     swapUsed = parsed.mem.swapTotal - parsed.mem.swapFree
     disks = parsed.disks
     temps = parsed.temps
-    gpus = parsed.gpus
-    primaryGpu = Model.primaryGpu(parsed.gpus)
+    fans = parsed.fans
+    psCpu = parsed.psCpu
+    psMem = parsed.psMem
+    batteries = parsed.batteries
+    battery = Model.batterySummary(parsed.batteries)
+    nvidiaSuspended = parsed.nvidiaSuspended
+
+    var allGpus = parsed.gpus
+    if (parsed.nvidiaSuspended) {
+      for (var n = 0; n < _lastNvidia.length; n++) allGpus = allGpus.concat([Model.markGpuAsleep(_lastNvidia[n])])
+    } else {
+      var nvidia = []
+      for (var g = 0; g < allGpus.length; g++) {
+        if (String(allGpus[g].card).indexOf("nv") === 0) nvidia.push(allGpus[g])
+      }
+      _lastNvidia = nvidia
+    }
+    gpus = allGpus
+    primaryGpu = Model.primaryGpu(allGpus)
     cpuTempC = Model.cpuTemp(parsed.temps)
+
+    if (hadPrev) {
+      cpuHist = Model.pushHistory(cpuHist, cpuPct)
+      memHist = Model.pushHistory(memHist, memPct)
+      netDownHist = Model.pushHistory(netDownHist, netDown)
+      netUpHist = Model.pushHistory(netUpHist, netUp)
+    }
 
     _prevCpus = parsed.cpus
     _prevNet = parsed.net
+    _prevIo = parsed.io
     _prevTime = now
     sample = parsed
     ready = _prevCpus !== null && corePcts.length > 0
@@ -103,9 +162,12 @@ Item {
     memPct: memPct,
     gpu: primaryGpu,
     disk: Model.diskFor(disks, settings && settings.diskMount ? String(settings.diskMount) : "/"),
+    io: { read: ioRead, write: ioWrite },
     netDown: netDown,
     netUp: netUp,
-    load1: load1
+    load1: load1,
+    cores: corePcts.length,
+    battery: battery
   })
 
   Timer {
@@ -117,8 +179,20 @@ Item {
   }
 
   Process {
+    id: staticProc
+    command: ["bash", root.scriptPath, "static"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root._staticText = text
+        root.refresh()
+      }
+    }
+  }
+
+  Process {
     id: proc
-    command: ["bash", root.scriptPath]
+    command: ["bash", root.scriptPath, "dynamic"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.apply(text)

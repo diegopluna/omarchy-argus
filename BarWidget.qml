@@ -8,7 +8,8 @@ import "Model.js" as Model
 
 // Argus system-monitor bar widget: compact selectable metrics in the bar, a tabbed
 // popup panel with the full picture, and per-metric toggles that persist to
-// shell.json.
+// shell.json. Bar segments turn the bar's urgent color past configurable
+// thresholds.
 //
 // Bar button — left click: panel · right click: btop · middle click: refresh
 // Panel — h/l or ←/→: switch tab · j/k or ↑/↓: scroll · r: refresh · Esc: close
@@ -24,12 +25,48 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
   readonly property var shownKeys: Model.normalizeShow(setting("show", Model.DEFAULT_SHOW))
+  readonly property var thresholds: Model.thresholdsFrom(settings)
+  readonly property var barSegs: sys.ready ? Model.barSegments(shownKeys, sys.barData, thresholds) : []
   // The placeholder icon also covers the not-yet-sampled window right after
   // the shell starts, so the widget is clickable from the first frame.
-  readonly property string displayText: sys.ready ? Model.barText(shownKeys, sys.barData) : Model.PLACEHOLDER_ICON
-  readonly property var verticalLines: sys.ready ? Model.barLines(shownKeys, sys.barData) : [Model.PLACEHOLDER_ICON]
+  readonly property bool placeholderOnly: barSegs.length === 0
 
-  readonly property var tabs: ["CPU", "MEM", "GPU", "DISK", "NET", "TEMP", "BAR"]
+  // "#aarrggbb" → "#rrggbb": styled-text font tags reject the alpha form.
+  function colorHex(c) {
+    var s = String(c)
+    return s.length === 9 ? "#" + s.slice(3) : s
+  }
+
+  // Plain text normally; when a segment crosses its threshold, styled text
+  // with per-segment <font> colors (the string starts with a tag so the
+  // label's AutoText detection reliably switches to StyledText).
+  readonly property string displayText: {
+    if (placeholderOnly) return Model.PLACEHOLDER_ICON
+    var anyUrgent = false
+    var i
+    for (i = 0; i < barSegs.length; i++) if (barSegs[i].urgent) anyUrgent = true
+    var parts = []
+    if (!anyUrgent) {
+      for (i = 0; i < barSegs.length; i++) parts.push(barSegs[i].text)
+      return parts.join("  ")
+    }
+    for (i = 0; i < barSegs.length; i++) {
+      parts.push("<font color=\"" + colorHex(barSegs[i].urgent ? root.urgent : root.foreground) + "\">"
+        + barSegs[i].text + "</font>")
+    }
+    return parts.join("&#160;&#160;")
+  }
+
+  readonly property var verticalLines: sys.ready
+    ? Model.barLines(shownKeys, sys.barData, thresholds)
+    : [{ text: Model.PLACEHOLDER_ICON, urgent: false }]
+
+  readonly property var tabs: {
+    var t = ["CPU", "MEM", "GPU", "DISK", "NET", "PROC", "TEMP"]
+    if (sys.batteries.length > 0) t.push("BAT")
+    t.push("BAR")
+    return t
+  }
   property string tab: "CPU"
 
   function switchTab(direction) {
@@ -38,6 +75,7 @@ Panel {
   }
 
   onTabChanged: flick.contentY = 0
+  onTabsChanged: if (tabs.indexOf(tab) === -1) tab = "CPU"
 
   function persistPluginSetting(name, value) {
     if (!root.bar || !root.bar.shell || typeof root.bar.shell.updateEntryInline !== "function") return
@@ -51,8 +89,36 @@ Panel {
     persistPluginSetting("show", Model.toggleShow(setting("show", Model.DEFAULT_SHOW), key))
   }
 
+  function moveMetric(key, delta) {
+    persistPluginSetting("show", Model.moveShow(setting("show", Model.DEFAULT_SHOW), key, delta))
+  }
+
   function meterColor(fraction) {
     return fraction >= 0.9 ? root.urgent : Color.accent
+  }
+
+  function histPeak(values) {
+    var peak = 0
+    for (var i = 0; i < values.length; i++) if (values[i] > peak) peak = values[i]
+    return peak
+  }
+
+  // BAR tab rows: shown metrics first, in bar order, then the rest. The
+  // battery metric only appears on machines that have one.
+  readonly property var metricRows: {
+    var rows = []
+    var i
+    for (i = 0; i < shownKeys.length; i++) {
+      var shown = Model.metricByKey(shownKeys[i])
+      if (shown) rows.push(shown)
+    }
+    for (i = 0; i < Model.METRICS.length; i++) {
+      var metric = Model.METRICS[i]
+      if (shownKeys.indexOf(metric.key) !== -1) continue
+      if (metric.key === "bat" && sys.batteries.length === 0) continue
+      rows.push(metric)
+    }
+    return rows
   }
 
   implicitWidth: button.implicitWidth
@@ -84,11 +150,6 @@ Panel {
     }
   }
 
-  // A bare Nerd Font glyph has asymmetric side bearings, so the plain text
-  // label would paint it visibly off-center; when only the placeholder icon
-  // shows, render through OpticalGlyph the way BarIconButton does.
-  readonly property bool placeholderOnly: displayText === Model.PLACEHOLDER_ICON
-
   WidgetButton {
     id: button
     anchors.fill: parent
@@ -108,6 +169,9 @@ Panel {
       else root.toggle()
     }
 
+    // A bare Nerd Font glyph has asymmetric side bearings, so the plain text
+    // label would paint it visibly off-center; when only the placeholder icon
+    // shows, render through OpticalGlyph the way BarIconButton does.
     OpticalGlyph {
       visible: !(root.bar && root.bar.vertical) && root.placeholderOnly
       anchors.centerIn: parent
@@ -127,13 +191,13 @@ Panel {
         model: root.verticalLines
 
         OpticalGlyph {
-          required property string modelData
+          required property var modelData
           width: button.width
           height: Style.bar.iconSlot
-          text: modelData
+          text: modelData.text
           fontFamily: button.fontFamily
-          fontSize: modelData.length > 3 ? button.fontSize * 0.85 : button.fontSize
-          color: button.foreground
+          fontSize: modelData.text.length > 3 ? button.fontSize * 0.85 : button.fontSize
+          color: modelData.urgent ? root.urgent : button.foreground
         }
       }
     }
@@ -146,7 +210,7 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(380))
+    contentWidth: panel.fittedContentWidth(Style.space(430))
     contentHeight: panel.fittedContentHeight(header.implicitHeight + Style.space(12) + flick.contentHeight, Style.space(560))
 
     PanelKeyCatcher {
@@ -263,6 +327,12 @@ Panel {
               fraction: sys.cpuPct / 100
             }
 
+            Sparkline {
+              width: parent.width
+              values: sys.cpuHist
+              maxValue: 100
+            }
+
             Text {
               text: sys.corePcts.length + " threads"
               color: root.dim
@@ -335,6 +405,12 @@ Panel {
               fraction: sys.memPct / 100
             }
 
+            Sparkline {
+              width: parent.width
+              values: sys.memHist
+              maxValue: 100
+            }
+
             MeterRow {
               visible: sys.swapTotal > 0
               label: "Swap · " + Model.fmtBytes(sys.swapUsed) + " of " + Model.fmtBytes(sys.swapTotal)
@@ -355,9 +431,19 @@ Panel {
             spacing: Style.space(10)
 
             Text {
-              visible: sys.gpus.length === 0
+              visible: sys.gpus.length === 0 && !sys.nvidiaSuspended
               width: parent.width
               text: "No supported GPU detected (amdgpu sysfs or nvidia-smi)."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              visible: sys.gpus.length === 0 && sys.nvidiaSuspended
+              width: parent.width
+              text: "NVIDIA GPU is runtime-suspended (asleep); stats resume when it wakes."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
@@ -379,14 +465,20 @@ Panel {
                   name: modelData.name
                 }
 
+                DetailRow {
+                  label: "State"
+                  value: modelData.asleep ? "Runtime-suspended (asleep)" : ""
+                }
+
                 MeterRow {
+                  visible: !modelData.asleep
                   label: "Usage"
                   value: Model.fmtPct(modelData.busy)
                   fraction: (modelData.busy || 0) / 100
                 }
 
                 MeterRow {
-                  visible: modelData.vramTotal > 0
+                  visible: !modelData.asleep && modelData.vramTotal > 0
                   label: "VRAM · " + Model.fmtBytes(modelData.vramUsed) + " of " + Model.fmtBytes(modelData.vramTotal)
                   value: modelData.vramTotal > 0 ? Model.fmtPct(100 * modelData.vramUsed / modelData.vramTotal) : ""
                   fraction: modelData.vramTotal > 0 ? modelData.vramUsed / modelData.vramTotal : 0
@@ -426,6 +518,27 @@ Panel {
                 }
               }
             }
+
+            PanelSectionHeader {
+              text: "I/O"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            DetailRow {
+              label: "Total"
+              value: sys.ready ? "R " + Model.fmtBytes(sys.ioRead) + "/s · W " + Model.fmtBytes(sys.ioWrite) + "/s" : ""
+            }
+
+            Repeater {
+              model: sys.ioDisks
+
+              DetailRow {
+                required property var modelData
+                label: modelData.model !== "" ? modelData.model + " · " + modelData.dev : modelData.dev
+                value: "R " + Model.fmtBytes(modelData.read) + "/s · W " + Model.fmtBytes(modelData.write) + "/s"
+              }
+            }
           }
 
           // ---- Network tab
@@ -445,6 +558,32 @@ Panel {
               value: sys.ready ? "\u{f0045} " + Model.fmtBytes(sys.netDown) + "/s   \u{f005d} " + Model.fmtBytes(sys.netUp) + "/s" : ""
             }
 
+            Text {
+              text: "Download · peak " + Model.fmtBytes(root.histPeak(sys.netDownHist)) + "/s"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            Sparkline {
+              width: parent.width
+              values: sys.netDownHist
+              heat: false
+            }
+
+            Text {
+              text: "Upload · peak " + Model.fmtBytes(root.histPeak(sys.netUpHist)) + "/s"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            Sparkline {
+              width: parent.width
+              values: sys.netUpHist
+              heat: false
+            }
+
             Repeater {
               model: sys.netIfaces
 
@@ -453,6 +592,45 @@ Panel {
                 visible: modelData.total > 0
                 label: modelData.iface
                 value: "\u{f0045} " + Model.fmtBytes(modelData.down) + "/s   \u{f005d} " + Model.fmtBytes(modelData.up) + "/s"
+              }
+            }
+          }
+
+          // ---- Processes tab
+          Column {
+            visible: root.tab === "PROC"
+            width: parent.width
+            spacing: Style.space(8)
+
+            PanelSectionHeader {
+              text: "TOP CPU"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Repeater {
+              model: sys.psCpu
+
+              DetailRow {
+                required property var modelData
+                label: modelData.comm + " · " + modelData.pid
+                value: modelData.cpu.toFixed(1) + "%"
+              }
+            }
+
+            PanelSectionHeader {
+              text: "TOP MEMORY"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Repeater {
+              model: sys.psMem
+
+              DetailRow {
+                required property var modelData
+                label: modelData.comm + " · " + modelData.pid
+                value: Model.fmtBytes(sys.memTotal * modelData.mem / 100)
               }
             }
           }
@@ -478,6 +656,82 @@ Panel {
                 value: Model.fmtTemp(modelData.celsius)
               }
             }
+
+            PanelSectionHeader {
+              visible: sys.fans.length > 0
+              text: "FANS"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Repeater {
+              model: sys.fans
+
+              DetailRow {
+                required property var modelData
+                label: Model.tempName(modelData)
+                value: modelData.rpm + " RPM"
+              }
+            }
+          }
+
+          // ---- Battery tab (only reachable when a system battery exists)
+          Column {
+            visible: root.tab === "BAT"
+            width: parent.width
+            spacing: Style.space(10)
+
+            Repeater {
+              model: sys.batteries
+
+              Column {
+                id: batteryBlock
+                required property var modelData
+                readonly property real pct: modelData.energyFullWh > 0
+                  ? 100 * modelData.energyNowWh / modelData.energyFullWh
+                  : modelData.capacity
+                width: parent.width
+                spacing: Style.space(6)
+
+                NameHeader {
+                  title: modelData.name.toUpperCase()
+                  name: modelData.model
+                }
+
+                MeterRow {
+                  label: "Charge"
+                    + (modelData.energyFullWh > 0
+                      ? " · " + modelData.energyNowWh.toFixed(1) + " of " + modelData.energyFullWh.toFixed(1) + " Wh"
+                      : "")
+                  value: Model.fmtPct(batteryBlock.pct)
+                  fraction: isFinite(batteryBlock.pct) ? batteryBlock.pct / 100 : 0
+                  urgentLow: true
+                }
+
+                DetailRow {
+                  label: "Status"
+                  value: modelData.status
+                }
+
+                DetailRow {
+                  label: "Power draw"
+                  value: modelData.powerW > 0 ? Model.fmtWatts(modelData.powerW) : ""
+                }
+
+                DetailRow {
+                  label: "Health"
+                  value: modelData.energyDesignWh > 0 && modelData.energyFullWh > 0
+                    ? Model.fmtPct(100 * modelData.energyFullWh / modelData.energyDesignWh)
+                      + " · " + modelData.energyFullWh.toFixed(1) + " of " + modelData.energyDesignWh.toFixed(1) + " Wh"
+                    : ""
+                }
+              }
+            }
+
+            DetailRow {
+              label: sys.battery && sys.battery.charging ? "Time to full" : "Time remaining"
+              value: sys.battery && isFinite(sys.battery.timeSec) ? Model.fmtUptime(sys.battery.timeSec) : ""
+            }
           }
 
           // ---- Bar metric selection tab
@@ -493,18 +747,60 @@ Panel {
             }
 
             Repeater {
-              model: Model.METRICS
+              model: root.metricRows
 
-              Toggle {
+              RowLayout {
+                id: metricRow
                 required property var modelData
+                readonly property int shownIndex: root.shownKeys.indexOf(modelData.key)
+                readonly property bool isShown: shownIndex !== -1
                 width: parent.width
-                label: (modelData.icon !== "" ? modelData.icon + "  " : "") + modelData.label
-                checked: root.shownKeys.indexOf(modelData.key) !== -1
-                foreground: root.foreground
-                accent: Color.accent
-                fontFamily: root.fontFamily
-                onClicked: root.toggleMetric(modelData.key)
+                spacing: Style.space(4)
+
+                PanelActionButton {
+                  visible: metricRow.isShown
+                  enabled: metricRow.shownIndex > 0
+                  iconText: "\u{f005d}"
+                  tooltipText: "Move up"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  size: Style.space(24)
+                  onClicked: root.moveMetric(metricRow.modelData.key, -1)
+                }
+
+                PanelActionButton {
+                  visible: metricRow.isShown
+                  enabled: metricRow.shownIndex < root.shownKeys.length - 1
+                  iconText: "\u{f0045}"
+                  tooltipText: "Move down"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  size: Style.space(24)
+                  onClicked: root.moveMetric(metricRow.modelData.key, 1)
+                }
+
+                Toggle {
+                  Layout.fillWidth: true
+                  label: (metricRow.modelData.icon !== "" ? metricRow.modelData.icon + "  " : "") + metricRow.modelData.label
+                  checked: metricRow.isShown
+                  foreground: root.foreground
+                  accent: Color.accent
+                  fontFamily: root.fontFamily
+                  onClicked: root.toggleMetric(metricRow.modelData.key)
+                }
               }
+            }
+
+            Text {
+              width: parent.width
+              text: "Bar order follows this list · segments turn " + "urgent past thresholds (see plugin settings)"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+              horizontalAlignment: Text.AlignHCenter
             }
 
             Text {
@@ -585,6 +881,8 @@ Panel {
     required property string label
     property string value: ""
     property real fraction: 0
+    // High fill is the alarming direction by default; battery charge flips it.
+    property bool urgentLow: false
     width: parent ? parent.width : 0
     spacing: Style.space(4)
 
@@ -621,11 +919,54 @@ Panel {
         anchors.bottom: parent.bottom
         width: parent.width * Math.max(0, Math.min(1, meterRow.fraction))
         radius: parent.radius
-        color: root.meterColor(meterRow.fraction)
+        color: meterRow.urgentLow
+          ? (meterRow.fraction <= 0.15 ? root.urgent : Color.accent)
+          : root.meterColor(meterRow.fraction)
 
         Behavior on width {
           NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
         }
+      }
+    }
+  }
+
+  // Rolling bar-chart history, right-aligned so the newest sample hugs the
+  // right edge and the chart fills leftward as history accumulates.
+  component Sparkline: Item {
+    id: spark
+    property var values: []
+    property real maxValue: 0 // 0 = autoscale to the series peak
+    property bool heat: true  // color bars by fraction; false = plain accent
+    height: Style.space(34)
+
+    readonly property real peak: {
+      if (maxValue > 0) return maxValue
+      var m = 1
+      for (var i = 0; i < values.length; i++) if (values[i] > m) m = values[i]
+      return m
+    }
+    readonly property real slot: width / Model.HISTORY_LEN
+
+    Rectangle {
+      anchors.fill: parent
+      radius: Style.space(2)
+      color: Qt.alpha(root.foreground, 0.07)
+    }
+
+    Repeater {
+      model: spark.values
+
+      Rectangle {
+        required property int index
+        required property real modelData
+        readonly property real fraction: Math.max(0, Math.min(1, modelData / spark.peak))
+        x: spark.width - (spark.values.length - index) * spark.slot
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 1
+        width: Math.max(1, spark.slot - 1)
+        height: Math.max(2, (spark.height - 2) * fraction)
+        radius: 1
+        color: spark.heat ? root.meterColor(fraction) : Color.accent
       }
     }
   }

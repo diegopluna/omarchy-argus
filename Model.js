@@ -1,8 +1,8 @@
 // Parsing and formatting for the Argus widget. Pure functions only, so the
 // whole file is testable with `node tests/model.test.js`.
 
-// Metrics the bar can show, in display order. `key` is what shell.json's
-// `show` array stores.
+// Metrics the bar can show. `key` is what shell.json's `show` array stores;
+// the user's stored order is the display order.
 var METRICS = [
   { key: "cpu",     label: "CPU usage",       icon: "\u{f0ee0}" }, // 󰻠
   { key: "cputemp", label: "CPU temperature", icon: "\u{f050f}" }, // 󰔏
@@ -11,11 +11,18 @@ var METRICS = [
   { key: "gputemp", label: "GPU temperature", icon: "\u{f08ae}" },
   { key: "vram",    label: "VRAM usage",      icon: "\u{f061a}" }, // 󰘚
   { key: "disk",    label: "Disk usage",      icon: "\u{f02ca}" }, // 󰋊
+  { key: "io",      label: "Disk I/O",        icon: "\u{f02ca}" },
   { key: "net",     label: "Network traffic", icon: "" },
-  { key: "load",    label: "Load average",    icon: "\u{f04c5}" }  // 󰓅
+  { key: "load",    label: "Load average",    icon: "\u{f04c5}" }, // 󰓅
+  { key: "bat",     label: "Battery",         icon: "" }           // icon tracks charge
 ]
 
 var DEFAULT_SHOW = ["cpu", "ram", "cputemp"]
+
+// Bar segments turn urgent-colored at these values; each is overridable via
+// the widget's inline settings (urgentCpuPct, urgentMemPct, urgentTempC,
+// urgentDiskPct).
+var DEFAULT_THRESHOLDS = { cpuPct: 90, memPct: 90, tempC: 85, diskPct: 90 }
 
 var ICON_DOWN = "\u{f0045}" // 󰁅
 var ICON_UP = "\u{f005d}"   // 󰁝
@@ -25,12 +32,13 @@ function metricByKey(key) {
   return null
 }
 
-// Normalize a stored `show` value into an ordered list of known keys.
+// Normalize a stored `show` value into a deduplicated list of known keys,
+// preserving the stored order — it is the bar's display order.
 function normalizeShow(value) {
   var list = value instanceof Array ? value : DEFAULT_SHOW
   var result = []
-  for (var i = 0; i < METRICS.length; i++) {
-    if (list.indexOf(METRICS[i].key) !== -1) result.push(METRICS[i].key)
+  for (var i = 0; i < list.length; i++) {
+    if (metricByKey(list[i]) !== null && result.indexOf(list[i]) === -1) result.push(list[i])
   }
   return result
 }
@@ -39,8 +47,33 @@ function toggleShow(current, key) {
   var list = normalizeShow(current)
   var index = list.indexOf(key)
   if (index >= 0) list.splice(index, 1)
-  else list.push(key)
-  return normalizeShow(list)
+  else if (metricByKey(key) !== null) list.push(key)
+  return list
+}
+
+// Move `key` by `delta` positions within the shown list (-1 up, +1 down).
+function moveShow(current, key, delta) {
+  var list = normalizeShow(current)
+  var from = list.indexOf(key)
+  var to = from + delta
+  if (from < 0 || to < 0 || to >= list.length) return list
+  list.splice(from, 1)
+  list.splice(to, 0, key)
+  return list
+}
+
+function thresholdsFrom(settings) {
+  function num(value, fallback) {
+    var n = Number(value)
+    return isFinite(n) && n > 0 ? n : fallback
+  }
+  settings = settings || {}
+  return {
+    cpuPct: num(settings.urgentCpuPct, DEFAULT_THRESHOLDS.cpuPct),
+    memPct: num(settings.urgentMemPct, DEFAULT_THRESHOLDS.memPct),
+    tempC: num(settings.urgentTempC, DEFAULT_THRESHOLDS.tempC),
+    diskPct: num(settings.urgentDiskPct, DEFAULT_THRESHOLDS.diskPct)
+  }
 }
 
 // ---- Sample parsing ------------------------------------------------------
@@ -60,6 +93,9 @@ function parseSample(text) {
   }
   var diskModels = parseDiskNames(sections.DISKNAMES || [])
   var diskLinks = parseDiskLinks(sections.DISKLINKS || [])
+  var gpuNames = parseGpuNames(sections.GPUNAMES || [])
+  var nvidiaLines = sections.NVIDIA || []
+  var nvidiaSuspended = nvidiaLines.length > 0 && nvidiaLines[0].trim() === "suspended"
   return {
     host: (sections.HOST || [""])[0].trim(),
     cpuName: (sections.CPUNAME || [""])[0].trim(),
@@ -68,8 +104,16 @@ function parseSample(text) {
     load: parseLoad(sections.LOAD || []),
     net: parseNet(sections.NET || []),
     disks: attachDiskModels(parseDf(sections.DF || []), diskModels, diskLinks),
+    diskModels: diskModels,
+    diskLinks: diskLinks,
+    io: parseDiskstats(sections.DISKSTATS || []),
     temps: parseTemps(sections.TEMP || []),
-    gpus: parseGpus(sections.GPU || []).concat(parseNvidia(sections.NVIDIA || []))
+    fans: parseFans(sections.FAN || []),
+    gpus: parseGpus(sections.GPU || [], gpuNames).concat(nvidiaSuspended ? [] : parseNvidia(nvidiaLines)),
+    nvidiaSuspended: nvidiaSuspended,
+    psCpu: parsePs(sections.PSCPU || []),
+    psMem: parsePs(sections.PSMEM || []),
+    batteries: parseBattery(sections.BAT || [])
   }
 }
 
@@ -92,6 +136,16 @@ function parseDiskLinks(lines) {
     if (parts.length === 2) links[parts[0]] = parts[1]
   }
   return links
+}
+
+// GPUNAMES lines: "card|lspci name" → { "0": "…[Radeon RX 9070/…]…" }
+function parseGpuNames(lines) {
+  var names = {}
+  for (var i = 0; i < lines.length; i++) {
+    var idx = lines[i].indexOf("|")
+    if (idx > 0) names[lines[i].slice(0, idx)] = lines[i].slice(idx + 1).trim()
+  }
+  return names
 }
 
 // Match a df source like /dev/nvme0n1p2 or /dev/mapper/root to its physical
@@ -199,6 +253,32 @@ function parseDf(lines) {
   return result
 }
 
+// /proc/diskstats: major minor name reads merged sectors_read ms_reading
+// writes merged sectors_written … — sectors are always 512 bytes here.
+function parseDiskstats(lines) {
+  var result = []
+  for (var i = 0; i < lines.length; i++) {
+    var f = lines[i].trim().split(/\s+/)
+    if (f.length < 10) continue
+    result.push({
+      dev: f[2],
+      readBytes: (Number(f[5]) || 0) * 512,
+      writeBytes: (Number(f[9]) || 0) * 512
+    })
+  }
+  return result
+}
+
+// A diskstats device is a whole physical disk when lsblk knows its model,
+// or when it appears in the parent chain only as a parent (dm/zram noise
+// appears as neither).
+function isWholeDisk(dev, models, links) {
+  if (dev in models) return true
+  if (dev in links) return false
+  for (var child in links) if (links[child] === dev) return true
+  return false
+}
+
 function parseTemps(lines) {
   var result = []
   for (var i = 0; i < lines.length; i++) {
@@ -211,7 +291,55 @@ function parseTemps(lines) {
   return result
 }
 
-// Friendly chip names for the temperatures list.
+// FAN lines share the TEMP shape: chip|label|rpm|device. Zero RPM is kept —
+// a stopped fan is information.
+function parseFans(lines) {
+  var result = []
+  for (var i = 0; i < lines.length; i++) {
+    var parts = lines[i].split("|")
+    if (parts.length < 3) continue
+    var rpm = Number(parts[2])
+    if (!isFinite(rpm) || rpm < 0) continue
+    result.push({ chip: parts[0], label: parts[1], rpm: rpm, device: (parts[3] || "").trim() })
+  }
+  return result
+}
+
+// ps axo pid=,pcpu=,pmem=,comm= lines; comm is last so its spaces survive.
+function parsePs(lines) {
+  var result = []
+  for (var i = 0; i < lines.length; i++) {
+    var match = lines[i].trim().match(/^(\d+)\s+([\d.]+)\s+([\d.]+)\s+(.+)$/)
+    if (!match) continue
+    result.push({ pid: match[1], cpu: Number(match[2]), mem: Number(match[3]), comm: match[4] })
+  }
+  return result
+}
+
+// BAT lines: name|status|capacity|energy_now|energy_full|energy_design|
+// power_now|model — energies in µWh, power in µW (sample.sh converts
+// charge_*-only batteries).
+function parseBattery(lines) {
+  var result = []
+  for (var i = 0; i < lines.length; i++) {
+    var p = lines[i].split("|")
+    if (p.length < 8) continue
+    var cap = Number(p[2])
+    result.push({
+      name: p[0].trim(),
+      status: p[1].trim(),
+      capacity: p[2].trim() !== "" && isFinite(cap) ? cap : NaN,
+      energyNowWh: (Number(p[3]) || 0) / 1e6,
+      energyFullWh: (Number(p[4]) || 0) / 1e6,
+      energyDesignWh: (Number(p[5]) || 0) / 1e6,
+      powerW: (Number(p[6]) || 0) / 1e6,
+      model: p.slice(7).join("|").trim()
+    })
+  }
+  return result
+}
+
+// Friendly chip names for the temperatures and fans lists.
 var CHIP_NAMES = [
   [/^k10temp$|^zenpower$|^coretemp$/, "CPU"],
   [/^amdgpu$|^nouveau$|^radeon$/, "GPU"],
@@ -224,7 +352,8 @@ var CHIP_NAMES = [
   [/battery/, "Battery"]
 ]
 
-// "NVMe · KINGSTON SNV3S1000G · Composite" style display name.
+// "NVMe · KINGSTON SNV3S1000G · Composite" style display name; fans share
+// the shape so they reuse this.
 function tempName(temp) {
   var friendly = temp.chip
   for (var i = 0; i < CHIP_NAMES.length; i++) {
@@ -250,7 +379,9 @@ function prettyGpuName(raw) {
   return name.replace(/^[^\[]*\[[^\]]*\]\s*/, "") || name
 }
 
-function parseGpus(lines) {
+// GPU lines (amdgpu sysfs): card|busy|vram_used|vram_total|temp; the lspci
+// name arrives separately in the static GPUNAMES section.
+function parseGpus(lines, names) {
   var result = []
   for (var i = 0; i < lines.length; i++) {
     var parts = lines[i].split("|")
@@ -262,7 +393,7 @@ function parseGpus(lines) {
       vramUsed: Number(parts[2]) || 0,
       vramTotal: Number(parts[3]) || 0,
       celsius: parts[4] !== "" ? Number(parts[4]) / 1000 : NaN,
-      name: prettyGpuName(parts[5])
+      name: prettyGpuName(names && parts[0] in names ? names[parts[0]] : "")
     })
   }
   return result
@@ -295,6 +426,22 @@ function parseNvidia(lines) {
     })
   }
   return result
+}
+
+// A runtime-suspended NVIDIA card, remembered from its last awake sample:
+// identity kept (name, VRAM size, so it stays the primary GPU), live
+// readings cleared so nothing stale renders.
+function markGpuAsleep(gpu) {
+  return {
+    card: gpu.card,
+    label: gpu.label,
+    name: gpu.name,
+    busy: NaN,
+    celsius: NaN,
+    vramUsed: 0,
+    vramTotal: gpu.vramTotal || 0,
+    asleep: true
+  }
 }
 
 // ---- Derived values ------------------------------------------------------
@@ -338,6 +485,30 @@ function netRates(prevNet, net, elapsedSec) {
   return { down: down, up: up, perIface: perIface }
 }
 
+// Read/write bytes-per-second per whole physical disk between two samples.
+// `prevIo`/`io` are raw parseDiskstats lists; models/links (from lsblk)
+// pick the whole-disk rows out of the partition noise.
+function ioRates(prevIo, io, elapsedSec, models, links) {
+  var byDev = {}
+  if (prevIo) for (var i = 0; i < prevIo.length; i++) byDev[prevIo[i].dev] = prevIo[i]
+  var read = 0, write = 0
+  var perDisk = []
+  for (var j = 0; j < io.length; j++) {
+    var cur = io[j]
+    if (!isWholeDisk(cur.dev, models || {}, links || {})) continue
+    var prev = byDev[cur.dev]
+    var r = 0, w = 0
+    if (prev && elapsedSec > 0) {
+      r = Math.max(0, (cur.readBytes - prev.readBytes) / elapsedSec)
+      w = Math.max(0, (cur.writeBytes - prev.writeBytes) / elapsedSec)
+    }
+    read += r
+    write += w
+    perDisk.push({ dev: cur.dev, model: models && cur.dev in models ? models[cur.dev] : "", read: r, write: w })
+  }
+  return { read: read, write: write, perDisk: perDisk }
+}
+
 // The CPU package temperature: k10temp Tctl (AMD), coretemp package
 // (Intel), or the first CPU-ish chip we can find.
 function cpuTemp(temps) {
@@ -366,6 +537,53 @@ function primaryGpu(gpus) {
 function diskFor(disks, mount) {
   for (var i = 0; i < disks.length; i++) if (disks[i].mount === mount) return disks[i]
   return disks.length > 0 ? disks[0] : null
+}
+
+// Combined view over every system battery (usually one; some laptops carry
+// two). Null when the machine has none — a desktop.
+function batterySummary(batteries) {
+  if (!batteries || batteries.length === 0) return null
+  var now = 0, full = 0, design = 0, watts = 0
+  var capSum = 0, capCount = 0
+  var charging = false, discharging = false
+  for (var i = 0; i < batteries.length; i++) {
+    var b = batteries[i]
+    now += b.energyNowWh || 0
+    full += b.energyFullWh || 0
+    design += b.energyDesignWh || 0
+    watts += b.powerW || 0
+    if (isFinite(b.capacity)) { capSum += b.capacity; capCount++ }
+    if (b.status === "Charging") charging = true
+    if (b.status === "Discharging") discharging = true
+  }
+  var pct = full > 0 ? 100 * now / full : (capCount > 0 ? capSum / capCount : NaN)
+  var timeSec = NaN
+  if (watts > 0.5) {
+    if (charging) timeSec = Math.max(0, full - now) / watts * 3600
+    else if (discharging) timeSec = now / watts * 3600
+  }
+  return {
+    count: batteries.length,
+    pct: pct,
+    status: charging ? "Charging" : (discharging ? "Discharging" : batteries[0].status),
+    charging: charging,
+    discharging: discharging,
+    watts: watts,
+    timeSec: timeSec,
+    healthPct: design > 0 && full > 0 ? 100 * full / design : NaN
+  }
+}
+
+// Fixed-length rolling history for the panel sparklines. Returns a new
+// array so QML property reassignment triggers rebinds.
+var HISTORY_LEN = 60
+
+function pushHistory(list, value, max) {
+  var result = (list || []).slice()
+  result.push(isFinite(value) ? value : 0)
+  var cap = max || HISTORY_LEN
+  while (result.length > cap) result.shift()
+  return result
 }
 
 // ---- Formatting ----------------------------------------------------------
@@ -412,20 +630,55 @@ function fmtTemp(celsius) {
   return isFinite(celsius) ? Math.round(celsius) + "°" : "—"
 }
 
+function fmtWatts(watts) {
+  if (!isFinite(watts) || watts <= 0) return "—"
+  return (watts >= 10 ? Math.round(watts) : watts.toFixed(1)) + " W"
+}
+
+// Battery glyph by charge level; the bolt variant while charging.
+function batteryIcon(pct, charging) {
+  if (charging) return "\u{f0084}" // 󰂄
+  if (!isFinite(pct) || pct >= 95) return "\u{f0079}" // 󰁹
+  var tier = Math.max(1, Math.min(9, Math.round(pct / 10)))
+  return String.fromCodePoint(0xf007a + tier - 1) // 󰁺 (10%) … 󰂂 (90%)
+}
+
 // The short value a metric shows in the bar, or "" to hide the segment
-// (e.g. GPU metrics on a machine without a supported GPU).
+// (e.g. GPU metrics on a machine without a supported GPU, battery on a
+// desktop, an asleep NVIDIA card).
 function metricValue(key, data) {
   switch (key) {
     case "cpu": return fmtPct(data.cpuPct)
     case "cputemp": return isFinite(data.cpuTemp) ? fmtTemp(data.cpuTemp) : ""
     case "ram": return fmtPct(data.memPct)
-    case "gpu": return data.gpu && isFinite(data.gpu.busy) ? fmtPct(data.gpu.busy) : ""
-    case "gputemp": return data.gpu && isFinite(data.gpu.celsius) ? fmtTemp(data.gpu.celsius) : ""
-    case "vram": return data.gpu && data.gpu.vramTotal > 0 ? fmtPct(100 * data.gpu.vramUsed / data.gpu.vramTotal) : ""
+    case "gpu": return data.gpu && !data.gpu.asleep && isFinite(data.gpu.busy) ? fmtPct(data.gpu.busy) : ""
+    case "gputemp": return data.gpu && !data.gpu.asleep && isFinite(data.gpu.celsius) ? fmtTemp(data.gpu.celsius) : ""
+    case "vram": return data.gpu && !data.gpu.asleep && data.gpu.vramTotal > 0 ? fmtPct(100 * data.gpu.vramUsed / data.gpu.vramTotal) : ""
     case "disk": return data.disk ? fmtPct(100 * data.disk.used / data.disk.size) : ""
+    case "io": return data.io ? "R" + fmtRateShort(data.io.read) + " W" + fmtRateShort(data.io.write) : ""
     case "net": return ICON_DOWN + fmtRateShort(data.netDown) + " " + ICON_UP + fmtRateShort(data.netUp)
     case "load": return data.load1.toFixed(2)
+    case "bat": return data.battery && isFinite(data.battery.pct)
+      ? batteryIcon(data.battery.pct, data.battery.charging) + " " + fmtPct(data.battery.pct)
+      : ""
     default: return ""
+  }
+}
+
+// Whether a metric's bar segment should render in the urgent color.
+function metricUrgent(key, data, th) {
+  th = th || DEFAULT_THRESHOLDS
+  switch (key) {
+    case "cpu": return data.cpuPct >= th.cpuPct
+    case "cputemp": return isFinite(data.cpuTemp) && data.cpuTemp >= th.tempC
+    case "ram": return data.memPct >= th.memPct
+    case "gpu": return !!(data.gpu && !data.gpu.asleep && isFinite(data.gpu.busy) && data.gpu.busy >= th.cpuPct)
+    case "gputemp": return !!(data.gpu && !data.gpu.asleep && isFinite(data.gpu.celsius) && data.gpu.celsius >= th.tempC)
+    case "vram": return !!(data.gpu && !data.gpu.asleep && data.gpu.vramTotal > 0 && 100 * data.gpu.vramUsed / data.gpu.vramTotal >= th.memPct)
+    case "disk": return !!(data.disk && data.disk.size > 0 && 100 * data.disk.used / data.disk.size >= th.diskPct)
+    case "load": return (Number(data.cores) || 0) > 0 && data.load1 >= data.cores
+    case "bat": return !!(data.battery && !data.battery.charging && isFinite(data.battery.pct) && data.battery.pct <= 15)
+    default: return false
   }
 }
 
@@ -435,54 +688,89 @@ function metricValue(key, data) {
 // unreachable from the bar. The eye of Argus, naturally.
 var PLACEHOLDER_ICON = "\u{f0208}" // 󰈈
 
-// Horizontal bar label: "󰻠 12%  󰍛 61%  󰔏 56°".
-function barText(showKeys, data) {
+// Renderable bar segments, in the user's order: { key, text, urgent }.
+function barSegments(showKeys, data, th) {
   var segments = []
   for (var i = 0; i < showKeys.length; i++) {
     var metric = metricByKey(showKeys[i])
     if (!metric) continue
     var value = metricValue(metric.key, data)
     if (value === "") continue
-    segments.push(metric.icon === "" ? value : metric.icon + " " + value)
+    segments.push({
+      key: metric.key,
+      text: metric.icon === "" ? value : metric.icon + " " + value,
+      urgent: metricUrgent(metric.key, data, th)
+    })
   }
-  return segments.length > 0 ? segments.join("  ") : PLACEHOLDER_ICON
+  return segments
 }
 
-// Vertical bar lines: icon line then value line per metric.
-function barLines(showKeys, data) {
+// Horizontal bar label without urgency coloring: "󰻠 12%  󰍛 61%  󰔏 56°".
+function barText(showKeys, data) {
+  var segments = barSegments(showKeys, data, null)
+  var parts = []
+  for (var i = 0; i < segments.length; i++) parts.push(segments[i].text)
+  return parts.length > 0 ? parts.join("  ") : PLACEHOLDER_ICON
+}
+
+// Vertical bar lines: { text, urgent } per line, icon line then value line
+// per metric. Rate metrics (net, io) are too wide sideways and are skipped.
+function barLines(showKeys, data, th) {
   var lines = []
   for (var i = 0; i < showKeys.length; i++) {
     var metric = metricByKey(showKeys[i])
-    if (!metric || metric.key === "net") continue
+    if (!metric || metric.key === "net" || metric.key === "io") continue
     var value = metricValue(metric.key, data)
     if (value === "") continue
-    if (metric.icon !== "") lines.push(metric.icon)
-    lines.push(value)
+    var urgent = metricUrgent(metric.key, data, th)
+    if (metric.key === "bat") {
+      lines.push({ text: batteryIcon(data.battery.pct, data.battery.charging), urgent: urgent })
+      lines.push({ text: fmtPct(data.battery.pct), urgent: urgent })
+      continue
+    }
+    if (metric.icon !== "") lines.push({ text: metric.icon, urgent: urgent })
+    lines.push({ text: value, urgent: urgent })
   }
-  return lines.length > 0 ? lines : [PLACEHOLDER_ICON]
+  return lines.length > 0 ? lines : [{ text: PLACEHOLDER_ICON, urgent: false }]
 }
 
 if (typeof module !== "undefined") {
   module.exports = {
     METRICS: METRICS,
     DEFAULT_SHOW: DEFAULT_SHOW,
+    DEFAULT_THRESHOLDS: DEFAULT_THRESHOLDS,
+    HISTORY_LEN: HISTORY_LEN,
     normalizeShow: normalizeShow,
     toggleShow: toggleShow,
+    moveShow: moveShow,
+    thresholdsFrom: thresholdsFrom,
     parseSample: parseSample,
+    parseDiskstats: parseDiskstats,
+    parseFans: parseFans,
+    parsePs: parsePs,
+    parseBattery: parseBattery,
     cpuUsage: cpuUsage,
     netRates: netRates,
+    ioRates: ioRates,
     cpuTemp: cpuTemp,
     tempName: tempName,
     prettyGpuName: prettyGpuName,
     parseNvidia: parseNvidia,
+    markGpuAsleep: markGpuAsleep,
     primaryGpu: primaryGpu,
     diskFor: diskFor,
+    batterySummary: batterySummary,
+    batteryIcon: batteryIcon,
+    pushHistory: pushHistory,
     fmtBytes: fmtBytes,
     fmtRateShort: fmtRateShort,
     fmtUptime: fmtUptime,
     fmtPct: fmtPct,
     fmtTemp: fmtTemp,
+    fmtWatts: fmtWatts,
     metricValue: metricValue,
+    metricUrgent: metricUrgent,
+    barSegments: barSegments,
     barText: barText,
     barLines: barLines,
     PLACEHOLDER_ICON: PLACEHOLDER_ICON
