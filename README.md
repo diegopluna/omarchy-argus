@@ -17,7 +17,7 @@ order in the panel's **BAR** tab; the choice persists to
 
 ## Panel tabs
 
-- **CPU** — processor model, overall usage with sparkline history, per-thread bars, frequency, temperature with session peak, load, uptime, PSI pressure, kernel version
+- **CPU** — processor model, overall usage with sparkline history, per-thread bars, frequency, temperature with session peak, load, uptime, stall pressure, kernel version
 - **MEM** — RAM usage with sparkline history, swap, PSI memory pressure
 - **GPU** — every GPU (AMD via amdgpu sysfs, NVIDIA via nvidia-smi, Intel via hwmon): name, usage with sparkline history, VRAM, temperature with session peak, power draw
 - **DISK** — every real filesystem with its physical disk model (LUKS/LVM resolved via lsblk), live read/write rates per physical disk, PSI I/O pressure
@@ -26,6 +26,12 @@ order in the panel's **BAR** tab; the choice persists to
 - **TEMP** — every hwmon sensor with friendly names (CPU, GPU, NVMe with drive model, RAM, Wi-Fi, …), plus fan speeds; each sensor row can carry its own alert threshold, set inline, and noisy sensors can be hidden (hidden sensors keep alerting)
 - **BAT** — per-battery charge, status, power draw, health, and time estimate (tab appears only when a system battery exists)
 - **BAR** — toggles and reorder arrows for which metrics the bar shows, plus the last few fired alerts with timestamps
+
+PSI "stall pressure" (`/proc/pressure`, shown over the 10s/1m/5m windows
+like a load average) is the share of time tasks spent *waiting* on a
+contended resource — it is not usage. On a healthy machine it reads 0
+however busy the CPU is; it only rises when work actually queues (more
+runnable tasks than cores, memory reclaim, saturated disk).
 
 | | |
 |---|---|

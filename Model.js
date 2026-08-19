@@ -142,16 +142,26 @@ function parseNetPhys(lines) {
 }
 
 // PSI lines: "cpu some avg10=0.26 avg60=0.31 avg300=0.41 total=…" →
-// { cpu: { some: 0.26, full: NaN }, memory: {…}, io: {…} } using avg10.
+// { cpu: { some: 0.26, some60: 0.31, some300: 0.41, full: … }, … }.
+// PSI is stall time from contention, not usage — 0 on a healthy machine.
 function parsePsi(lines) {
   var psi = {}
   for (var i = 0; i < lines.length; i++) {
-    var match = lines[i].match(/^(cpu|memory|io)\s+(some|full)\s+avg10=([\d.]+)/)
+    var match = lines[i].match(/^(cpu|memory|io)\s+(some|full)\s+avg10=([\d.]+)\s+avg60=([\d.]+)\s+avg300=([\d.]+)/)
     if (!match) continue
-    if (!psi[match[1]]) psi[match[1]] = { some: NaN, full: NaN }
+    if (!psi[match[1]]) psi[match[1]] = { some: NaN, some60: NaN, some300: NaN, full: NaN, full60: NaN, full300: NaN }
     psi[match[1]][match[2]] = Number(match[3])
+    psi[match[1]][match[2] + "60"] = Number(match[4])
+    psi[match[1]][match[2] + "300"] = Number(match[5])
   }
   return psi
+}
+
+// "0.0 / 0.2 / 1.4 %" over the 10s/1m/5m windows, or "" when absent.
+function fmtPsi(entry, kind) {
+  if (!entry || !isFinite(entry[kind])) return ""
+  function one(v) { return isFinite(v) ? v.toFixed(1) : "—" }
+  return one(entry[kind]) + " / " + one(entry[kind + "60"]) + " / " + one(entry[kind + "300"]) + " %"
 }
 
 // lsblk -dno NAME,MODEL lines → { nvme0n1: "KINGSTON ...", ... }
@@ -976,6 +986,7 @@ if (typeof module !== "undefined") {
     procDisplay: procDisplay,
     parseBattery: parseBattery,
     parsePsi: parsePsi,
+    fmtPsi: fmtPsi,
     parseNetPhys: parseNetPhys,
     parseIntelGpus: parseIntelGpus,
     hottestDrive: hottestDrive,

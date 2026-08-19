@@ -4,6 +4,16 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] — 2026-08-19
+
+### Changed
+- PSI rows renamed to "Stall pressure" and now show the 10s/1m/5m windows
+  like a load average, with an in-panel note that 0 means nothing had to
+  wait — the single 10-second value read as permanently broken-at-zero on
+  healthy machines (verified against induced contention: the pipeline
+  reports exactly what the kernel does).
+- The `metrics` IPC snapshot now includes the PSI values.
+
 ## [0.7.0] — 2026-08-19
 
 ### Added

@@ -243,6 +243,7 @@ Panel {
         netUpBps: Service.netUp,
         ioReadBps: Service.ioRead,
         ioWriteBps: Service.ioWrite,
+        psi: Service.psi,
         gpus: Service.gpus.map(function(g) {
           return { label: g.label, name: g.name, busyPct: g.busy, tempC: g.celsius, vramUsed: g.vramUsed, vramTotal: g.vramTotal, powerW: g.powerW, asleep: g.asleep === true }
         }),
@@ -536,8 +537,8 @@ Panel {
             }
 
             DetailRow {
-              label: "Pressure (PSI, 10s avg)"
-              value: Service.psi.cpu && isFinite(Service.psi.cpu.some) ? "some " + Service.psi.cpu.some.toFixed(1) + "%" : ""
+              label: "Stall pressure 10s / 1m / 5m"
+              value: Model.fmtPsi(Service.psi.cpu, "some")
             }
 
             DetailRow {
@@ -590,10 +591,17 @@ Panel {
             }
 
             DetailRow {
-              label: "Pressure (PSI, 10s avg)"
-              value: Service.psi.memory && isFinite(Service.psi.memory.some)
-                ? "some " + Service.psi.memory.some.toFixed(1) + "% · full " + Service.psi.memory.full.toFixed(1) + "%"
-                : ""
+              label: "Stall pressure 10s / 1m / 5m"
+              value: Model.fmtPsi(Service.psi.memory, "some")
+            }
+
+            Text {
+              width: parent.width
+              text: "Stall pressure (PSI) is time tasks spent waiting on the resource — 0 means nothing had to wait, however busy the machine was."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
           }
 
@@ -748,10 +756,8 @@ Panel {
             }
 
             DetailRow {
-              label: "Pressure (PSI, 10s avg)"
-              value: Service.psi.io && isFinite(Service.psi.io.some)
-                ? "some " + Service.psi.io.some.toFixed(1) + "% · full " + Service.psi.io.full.toFixed(1) + "%"
-                : ""
+              label: "Stall pressure 10s / 1m / 5m"
+              value: Model.fmtPsi(Service.psi.io, "some")
             }
 
             Text {

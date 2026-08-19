@@ -262,8 +262,14 @@ const psi = Model.parsePsi([
   "io some avg10=2.20 avg60=0.30 avg300=0.39 total=1"
 ])
 assert.strictEqual(psi.cpu.some, 1.5)
+assert.strictEqual(psi.cpu.some60, 0.31)
+assert.strictEqual(psi.cpu.some300, 0.41)
 assert.strictEqual(psi.memory.full, 0.05)
 assert.strictEqual(psi.io.some, 2.2)
+assert.strictEqual(Model.fmtPsi(psi.cpu, "some"), "1.5 / 0.3 / 0.4 %")
+assert.strictEqual(Model.fmtPsi(psi.cpu, "full"), "0.0 / 0.0 / 0.0 %")
+assert.strictEqual(Model.fmtPsi(null, "some"), "")
+assert.strictEqual(Model.fmtPsi({ some: NaN }, "some"), "")
 assert.ok(sample.psi.cpu && isFinite(sample.psi.cpu.some), "live PSI parsed")
 
 // Virtual interfaces stay out of the totals but keep their per-iface rows.
