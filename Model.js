@@ -286,7 +286,11 @@ function parseTemps(lines) {
     if (parts.length < 3) continue
     var value = Number(parts[2])
     if (!isFinite(value) || value === 0) continue
-    result.push({ chip: parts[0], label: parts[1], celsius: value / 1000, device: (parts[3] || "").trim() })
+    var celsius = value / 1000
+    // Super I/O chips report garbage on unconnected inputs (large
+    // negatives, 255°); drop the physically implausible.
+    if (celsius < -40 || celsius > 250) continue
+    result.push({ chip: parts[0], label: parts[1], celsius: celsius, device: (parts[3] || "").trim() })
   }
   return result
 }
@@ -379,8 +383,8 @@ function prettyGpuName(raw) {
   return name.replace(/^[^\[]*\[[^\]]*\]\s*/, "") || name
 }
 
-// GPU lines (amdgpu sysfs): card|busy|vram_used|vram_total|temp; the lspci
-// name arrives separately in the static GPUNAMES section.
+// GPU lines (amdgpu sysfs): card|busy|vram_used|vram_total|temp|power (µW);
+// the lspci name arrives separately in the static GPUNAMES section.
 function parseGpus(lines, names) {
   var result = []
   for (var i = 0; i < lines.length; i++) {
@@ -393,6 +397,7 @@ function parseGpus(lines, names) {
       vramUsed: Number(parts[2]) || 0,
       vramTotal: Number(parts[3]) || 0,
       celsius: parts[4] !== "" ? Number(parts[4]) / 1000 : NaN,
+      powerW: parts.length > 5 && parts[5] !== "" ? Number(parts[5]) / 1e6 : NaN,
       name: prettyGpuName(names && parts[0] in names ? names[parts[0]] : "")
     })
   }
@@ -400,10 +405,11 @@ function parseGpus(lines, names) {
 }
 
 // nvidia-smi --format=csv,noheader,nounits lines:
-//   "0, NVIDIA GeForce RTX 3080, 5, 45, 1024, 10240"
-// (index, name, util %, temp °C, memory used MiB, memory total MiB).
-// Fields can read "[N/A]" or "[Not Supported]"; a comma inside the name is
-// handled by taking the trailing four numeric fields from the end.
+//   "0, NVIDIA GeForce RTX 3080, 5, 45, 1024, 10240, 98.5"
+// (index, name, util %, temp °C, memory used MiB, memory total MiB,
+// power draw W). Fields can read "[N/A]" or "[Not Supported]"; a comma
+// inside the name is handled by taking the trailing five numeric fields
+// from the end.
 function parseNvidia(lines) {
   function num(s) {
     var v = Number(String(s).trim())
@@ -413,16 +419,17 @@ function parseNvidia(lines) {
   for (var i = 0; i < lines.length; i++) {
     var f = lines[i].split(",")
     var n = f.length
-    if (n < 6) continue
+    if (n < 7) continue
     var index = String(f[0]).trim()
     result.push({
       card: "nv" + index,
       label: "GPU " + index + " (NVIDIA)",
-      busy: num(f[n - 4]),
-      celsius: num(f[n - 3]),
-      vramUsed: (num(f[n - 2]) || 0) * 1048576,
-      vramTotal: (num(f[n - 1]) || 0) * 1048576,
-      name: f.slice(1, n - 4).join(",").trim()
+      busy: num(f[n - 5]),
+      celsius: num(f[n - 4]),
+      vramUsed: (num(f[n - 3]) || 0) * 1048576,
+      vramTotal: (num(f[n - 2]) || 0) * 1048576,
+      powerW: num(f[n - 1]),
+      name: f.slice(1, n - 5).join(",").trim()
     })
   }
   return result
@@ -438,6 +445,7 @@ function markGpuAsleep(gpu) {
     name: gpu.name,
     busy: NaN,
     celsius: NaN,
+    powerW: NaN,
     vramUsed: 0,
     vramTotal: gpu.vramTotal || 0,
     asleep: true
@@ -682,6 +690,32 @@ function metricUrgent(key, data, th) {
   }
 }
 
+// Metrics the alert watchdog evaluates every tick, regardless of which
+// segments the bar shows. Load is deliberately absent — it flaps.
+var ALERT_KEYS = ["cpu", "cputemp", "ram", "gpu", "gputemp", "vram", "disk", "bat"]
+
+// One-line notification body for a metric that crossed its threshold, e.g.
+// "CPU temperature at 92° (threshold 85°)".
+function alertText(key, data, th) {
+  th = th || DEFAULT_THRESHOLDS
+  var metric = metricByKey(key)
+  var label = metric ? metric.label : key
+  var value
+  var limit
+  switch (key) {
+    case "cpu": value = fmtPct(data.cpuPct); limit = th.cpuPct + "%"; break
+    case "cputemp": value = fmtTemp(data.cpuTemp); limit = th.tempC + "°"; break
+    case "ram": value = fmtPct(data.memPct); limit = th.memPct + "%"; break
+    case "gpu": value = data.gpu ? fmtPct(data.gpu.busy) : "—"; limit = th.cpuPct + "%"; break
+    case "gputemp": value = data.gpu ? fmtTemp(data.gpu.celsius) : "—"; limit = th.tempC + "°"; break
+    case "vram": value = data.gpu && data.gpu.vramTotal > 0 ? fmtPct(100 * data.gpu.vramUsed / data.gpu.vramTotal) : "—"; limit = th.memPct + "%"; break
+    case "disk": value = data.disk ? fmtPct(100 * data.disk.used / data.disk.size) : "—"; limit = th.diskPct + "%"; break
+    case "bat": value = data.battery ? fmtPct(data.battery.pct) : "—"; limit = "15%"; break
+    default: value = "—"; limit = ""
+  }
+  return label + " at " + value + (limit !== "" ? " (threshold " + limit + ")" : "")
+}
+
 // Shown when no metric renders a segment (all deselected, or none of the
 // selected ones has data). Without it the widget would collapse to zero
 // width and the panel — the only place to re-enable metrics — would become
@@ -770,6 +804,8 @@ if (typeof module !== "undefined") {
     fmtWatts: fmtWatts,
     metricValue: metricValue,
     metricUrgent: metricUrgent,
+    ALERT_KEYS: ALERT_KEYS,
+    alertText: alertText,
     barSegments: barSegments,
     barText: barText,
     barLines: barLines,

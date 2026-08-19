@@ -1,0 +1,18 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  model:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # CI=1 (set by Actions) relaxes the hardware-shaped live assertions
+      # (hwmon sensors, physical-disk models) that a VM cannot satisfy.
+      - run: node tests/model.test.js
+      - run: bash -n sample.sh

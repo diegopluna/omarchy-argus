@@ -4,6 +4,32 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] — 2026-08-19
+
+### Added
+- Threshold alerts: a desktop notification when a metric stays past its
+  urgent threshold for 3 consecutive ticks (5-minute per-metric cooldown;
+  `alerts` setting, default On). Temperatures and battery use critical
+  urgency.
+- GPU tab: usage sparkline for the primary card, power draw per card
+  (amdgpu `power1_average` / nvidia-smi `power.draw`), and session-peak
+  temperature.
+- Session peaks: CPU temperature, network down/up, and disk I/O peaks
+  since shell start, shown in their tabs.
+- Fan rows fall back to `fan1`/`fan2`/… names when a chip exposes
+  unlabeled headers (Super I/O chips expose several), and the README
+  documents loading `nct6775`/`it87` for motherboard fans.
+- CI: GitHub Actions runs the model tests on every push.
+
+### Changed
+- One sampler now runs for the whole shell instead of one per bar surface
+  (the service became a Quickshell singleton) — multi-monitor setups halve
+  their sampling work.
+- Top processes are sampled only while a panel is open.
+- Implausible Super I/O temperature readings (below −40° or above 250°)
+  are dropped.
+- Refreshed all README screenshots; added the PROC tab.
+
 ## [0.3.0] — 2026-08-19
 
 ### Added

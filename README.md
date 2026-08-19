@@ -17,9 +17,9 @@ order in the panel's **BAR** tab; the choice persists to
 
 ## Panel tabs
 
-- **CPU** — processor model, overall usage with sparkline history, per-thread bars, frequency, temperature, load, uptime
+- **CPU** — processor model, overall usage with sparkline history, per-thread bars, frequency, temperature with session peak, load, uptime
 - **MEM** — RAM usage with sparkline history, swap
-- **GPU** — every GPU (AMD via amdgpu sysfs, NVIDIA via nvidia-smi): name, usage, VRAM, temperature
+- **GPU** — every GPU (AMD via amdgpu sysfs, NVIDIA via nvidia-smi): name, usage with sparkline history, VRAM, temperature with session peak, power draw
 - **DISK** — every real filesystem with its physical disk model (LUKS/LVM resolved via lsblk), plus live read/write rates per physical disk
 - **NET** — total and per-interface download/upload rates, with download/upload sparklines
 - **PROC** — top processes by CPU and by memory
@@ -32,7 +32,7 @@ order in the panel's **BAR** tab; the choice persists to
 | ![CPU tab](screenshots/tab-cpu.png) | ![GPU tab](screenshots/tab-gpu.png) |
 | ![TEMP tab](screenshots/tab-temp.png) | ![BAR tab](screenshots/tab-bar.png) |
 | ![MEM tab](screenshots/tab-mem.png) | ![NET tab](screenshots/tab-net.png) |
-| ![DISK tab](screenshots/tab-disk.png) | |
+| ![DISK tab](screenshots/tab-disk.png) | ![PROC tab](screenshots/tab-proc.png) |
 
 ## Interactions
 
@@ -75,9 +75,34 @@ Inline settings on the widget's entry in `shell.json`:
 | `urgentMemPct` | `90` | RAM/VRAM usage % at which the bar segment turns urgent |
 | `urgentTempC` | `85` | Temperature (°C) at which temp segments turn urgent |
 | `urgentDiskPct` | `90` | Disk usage % at which the bar segment turns urgent |
+| `alerts` | `"On"` | Desktop notification when a metric stays past its threshold |
 
 Load average turns urgent when the 1-minute load reaches the thread count;
 battery turns urgent at ≤15% while discharging.
+
+## Alerts
+
+With `alerts` on, a metric that stays past its urgent threshold for three
+consecutive ticks fires one desktop notification (via `notify-send`, so it
+renders through the Omarchy shell), e.g. *"CPU temperature at 92°
+(threshold 85°)"*. Temperature and battery alerts use critical urgency;
+usage alerts are normal. Each metric then stays quiet for a 5-minute
+cooldown. Alerts evaluate every sampled metric, whether or not its bar
+segment is shown.
+
+## Fans
+
+Argus lists every `fan*_input` the kernel exposes under
+`/sys/class/hwmon`. GPU and NVMe fans appear out of the box; motherboard
+fan headers need the board's Super I/O driver loaded — on most consumer
+boards (ASUS/MSI/Gigabyte with Nuvoton chips):
+
+```bash
+sudo modprobe nct6775
+echo nct6775 | sudo tee /etc/modules-load.d/nct6775.conf
+```
+
+(`it87` for ITE chips; `asus_ec_sensors` covers some ASUS boards.)
 
 ## IPC
 
@@ -103,7 +128,11 @@ polling never keeps an Optimus dGPU awake, and shows the card as asleep.
 Hybrid AMD iGPU + NVIDIA dGPU systems list both, with the bar's GPU metrics
 following the card with the most VRAM.
 
-One short bash sampler runs per refresh; hardware identity that cannot
+One short bash sampler runs per refresh — shared by every bar surface, so
+multi-monitor setups still sample once. Hardware identity that cannot
 change while the shell runs (hostname, CPU model, disk models, GPU names)
-is sampled once at startup (`sample.sh static`), so `lsblk`/`lspci` stay off
-the hot path. Usage deltas are computed in QML.
+is sampled once at startup (`sample.sh static`), and top processes are
+sampled only while a panel is open, so `lsblk`/`lspci`/`ps` stay off the
+always-on hot path. GPU power draw comes from amdgpu's hwmon
+`power1_average` and nvidia-smi's `power.draw`. Usage deltas are computed
+in QML.

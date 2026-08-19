@@ -1,20 +1,40 @@
+pragma Singleton
 import QtQuick
+import Quickshell
 import Quickshell.Io
 import "Model.js" as Model
 
-// Polls sample.sh on a timer and exposes parsed, delta-derived system data.
-// One instance runs per bar surface; the sampler is a single short-lived
-// bash process per tick. Hardware identity (hostname, CPU model, disk
-// models, GPU names) is sampled once at startup via `sample.sh static` and
-// merged into every dynamic tick, so lsblk/lspci never run on the hot path.
-Item {
+// Shared system-monitor state: polls sample.sh on a timer and exposes
+// parsed, delta-derived data. A singleton so multi-monitor setups run ONE
+// sampler regardless of how many bar surfaces show the widget; every
+// surface binds to the same instance. Hardware identity (hostname, CPU
+// model, disk models, GPU names) is sampled once at startup via
+// `sample.sh static` and merged into every dynamic tick, so lsblk/lspci
+// never run on the hot path. Panel-only data (top processes) is sampled
+// only while at least one panel is open.
+Singleton {
   id: root
 
+  // Pushed by each widget instance; all surfaces share one shell.json
+  // entry so the values are identical.
   property var settings: ({})
 
   readonly property int intervalSec: {
     var value = Number(settings && settings.intervalSec)
     return isFinite(value) && value >= 1 ? Math.min(60, Math.round(value)) : 2
+  }
+
+  // How many panels are currently open across all bar surfaces.
+  property int _panelRefs: 0
+  readonly property bool panelActive: _panelRefs > 0
+
+  function panelOpened() {
+    _panelRefs++
+    refresh()
+  }
+
+  function panelClosed() {
+    _panelRefs = Math.max(0, _panelRefs - 1)
   }
 
   // Raw parsed sample plus previous tick for delta metrics.
@@ -65,8 +85,17 @@ Item {
   // points, oldest first). Populated only from valid delta ticks.
   property var cpuHist: []
   property var memHist: []
+  property var gpuHist: []
   property var netDownHist: []
   property var netUpHist: []
+
+  // Highest values observed since the shell started.
+  property real peakCpuTemp: NaN
+  property real peakGpuTemp: NaN
+  property real peakNetDown: 0
+  property real peakNetUp: 0
+  property real peakIoRead: 0
+  property real peakIoWrite: 0
 
   readonly property real memPct: memTotal > 0 ? 100 * memUsed / memTotal : 0
   readonly property real swapPct: swapTotal > 0 ? 100 * swapUsed / swapTotal : 0
@@ -120,8 +149,10 @@ Item {
     disks = parsed.disks
     temps = parsed.temps
     fans = parsed.fans
-    psCpu = parsed.psCpu
-    psMem = parsed.psMem
+    // Process lists are panel-only samples; keep the last snapshot while
+    // the panel is closed instead of blanking the PROC tab.
+    if (parsed.psCpu.length > 0) psCpu = parsed.psCpu
+    if (parsed.psMem.length > 0) psMem = parsed.psMem
     batteries = parsed.batteries
     battery = Model.batterySummary(parsed.batteries)
     nvidiaSuspended = parsed.nvidiaSuspended
@@ -143,9 +174,16 @@ Item {
     if (hadPrev) {
       cpuHist = Model.pushHistory(cpuHist, cpuPct)
       memHist = Model.pushHistory(memHist, memPct)
+      gpuHist = Model.pushHistory(gpuHist, primaryGpu ? primaryGpu.busy : 0)
       netDownHist = Model.pushHistory(netDownHist, netDown)
       netUpHist = Model.pushHistory(netUpHist, netUp)
+      if (netDown > peakNetDown) peakNetDown = netDown
+      if (netUp > peakNetUp) peakNetUp = netUp
+      if (ioRead > peakIoRead) peakIoRead = ioRead
+      if (ioWrite > peakIoWrite) peakIoWrite = ioWrite
     }
+    if (isFinite(cpuTempC) && !(cpuTempC <= peakCpuTemp)) peakCpuTemp = cpuTempC
+    if (primaryGpu && isFinite(primaryGpu.celsius) && !(primaryGpu.celsius <= peakGpuTemp)) peakGpuTemp = primaryGpu.celsius
 
     _prevCpus = parsed.cpus
     _prevNet = parsed.net
@@ -153,6 +191,38 @@ Item {
     _prevTime = now
     sample = parsed
     ready = _prevCpus !== null && corePcts.length > 0
+
+    if (ready && hadPrev) checkAlerts(now)
+  }
+
+  // ---- Threshold alerts ----------------------------------------------
+  // When a metric stays past its threshold for alertHoldTicks consecutive
+  // ticks, send one desktop notification, then stay quiet for the
+  // cooldown. Temperatures and battery are critical; the rest normal.
+  readonly property bool alertsEnabled: !settings || settings.alerts !== "Off"
+  readonly property int alertHoldTicks: 3
+  readonly property int alertCooldownMs: 300000
+
+  property var _alertStreak: ({})
+  property var _alertNotifiedAt: ({})
+
+  function checkAlerts(now) {
+    if (!alertsEnabled) return
+    var th = Model.thresholdsFrom(settings)
+    var data = barData
+    for (var i = 0; i < Model.ALERT_KEYS.length; i++) {
+      var key = Model.ALERT_KEYS[i]
+      var streak = Model.metricUrgent(key, data, th) ? (_alertStreak[key] || 0) + 1 : 0
+      _alertStreak[key] = streak
+      if (streak !== alertHoldTicks) continue
+      if (now - (_alertNotifiedAt[key] || 0) < alertCooldownMs) continue
+      _alertNotifiedAt[key] = now
+      var critical = key === "cputemp" || key === "gputemp" || key === "bat"
+      Quickshell.execDetached([
+        "notify-send", "-a", "Argus", "-u", critical ? "critical" : "normal",
+        "Argus", Model.alertText(key, data, th)
+      ])
+    }
   }
 
   // Everything metricValue/barText need, bundled once per bind.
@@ -192,7 +262,9 @@ Item {
 
   Process {
     id: proc
-    command: ["bash", root.scriptPath, "dynamic"]
+    command: root.panelActive
+      ? ["bash", root.scriptPath, "dynamic", "panel"]
+      : ["bash", root.scriptPath, "dynamic"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.apply(text)

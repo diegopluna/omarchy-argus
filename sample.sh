@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # Emits one system sample as sectioned plain text; parsed by Model.js.
 #
-# Usage: sample.sh [static|dynamic]
+# Usage: sample.sh [static|dynamic [panel]]
 #   static  — hardware identity that never changes while the shell runs
 #             (hostname, CPU model, disk models/topology, GPU names)
-#   dynamic — everything that moves; sampled every tick
-#   (none)  — both, for tests and one-shot use
+#   dynamic — everything that moves; sampled every tick. With the extra
+#             "panel" argument, also emits the sections only the open panel
+#             displays (top processes).
+#   (none)  — everything, for tests and one-shot use
 
 mode="${1:-all}"
+panel="${2:-}"
 
 if [ "$mode" != "dynamic" ]; then
   echo '###HOST'
@@ -76,6 +79,9 @@ for h in /sys/class/hwmon/hwmon*; do
     value=$(cat "$f" 2>/dev/null) || continue
     [ -n "$value" ] || continue
     label=$(cat "${f%_input}_label" 2>/dev/null)
+    # Super I/O chips (nct*, it87) expose several unlabeled headers; fall
+    # back to fan1/fan2/… so the rows stay distinguishable.
+    if [ -z "$label" ]; then label=$(basename "${f%_input}"); fi
     echo "$name|$label|$value|$device"
   done
 done
@@ -88,6 +94,7 @@ for c in /sys/class/drm/card[0-9] /sys/class/drm/card[0-9][0-9]; do
   vram_used=$(cat "$d/mem_info_vram_used" 2>/dev/null)
   vram_total=$(cat "$d/mem_info_vram_total" 2>/dev/null)
   temp=""
+  power=""
   for t in "$d"/hwmon/hwmon*/temp*_input; do
     [ -r "$t" ] || continue
     v=$(cat "$t" 2>/dev/null)
@@ -95,7 +102,12 @@ for c in /sys/class/drm/card[0-9] /sys/class/drm/card[0-9][0-9]; do
     label=$(cat "${t%_input}_label" 2>/dev/null)
     if [ "$label" = "edge" ] || [ -z "$temp" ]; then temp=$v; fi
   done
-  echo "${c##*/card}|$busy|$vram_used|$vram_total|$temp"
+  for p in "$d"/hwmon/hwmon*/power1_average "$d"/hwmon/hwmon*/power1_input; do
+    [ -r "$p" ] || continue
+    power=$(cat "$p" 2>/dev/null)
+    break
+  done
+  echo "${c##*/card}|$busy|$vram_used|$vram_total|$temp|$power"
 done
 
 echo '###NVIDIA'
@@ -117,18 +129,22 @@ if [ -e /proc/driver/nvidia/version ] && command -v nvidia-smi >/dev/null 2>&1; 
   done
   if [ "$found" = 0 ] || [ "$awake" = 1 ]; then
     timeout 3 nvidia-smi \
-      --query-gpu=index,name,utilization.gpu,temperature.gpu,memory.used,memory.total \
+      --query-gpu=index,name,utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw \
       --format=csv,noheader,nounits 2>/dev/null
   else
     echo "suspended"
   fi
 fi
 
-echo '###PSCPU'
-ps axo pid=,pcpu=,pmem=,comm= --sort=-pcpu 2>/dev/null | head -n 10
+# Top processes are only visible in the open panel; skip them on the
+# always-on bar tick.
+if [ "$mode" = "all" ] || [ "$panel" = "panel" ]; then
+  echo '###PSCPU'
+  ps axo pid=,pcpu=,pmem=,comm= --sort=-pcpu 2>/dev/null | head -n 10
 
-echo '###PSMEM'
-ps axo pid=,pcpu=,pmem=,comm= --sort=-pmem 2>/dev/null | head -n 10
+  echo '###PSMEM'
+  ps axo pid=,pcpu=,pmem=,comm= --sort=-pmem 2>/dev/null | head -n 10
+fi
 
 echo '###BAT'
 for b in /sys/class/power_supply/*; do

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.diegopluna.argus",
   "name": "Argus",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": "Diego Peter",
   "license": "MIT",
   "description": "CPU, RAM, GPU, disk, network, battery, and temperature stats in the bar, with sparkline history, top processes, urgent-threshold highlighting, and a full system panel.",
@@ -36,6 +36,14 @@
         "label": "Disk mount for the bar metric",
         "defaultValue": "/",
         "description": "Mount point whose usage the bar's disk metric shows."
+      },
+      {
+        "key": "alerts",
+        "type": "enum",
+        "label": "Desktop notifications on sustained threshold breach",
+        "options": ["On", "Off"],
+        "defaultValue": "On",
+        "description": "Notify when a metric stays past its urgent threshold for 3 ticks (5-minute cooldown per metric)."
       },
       {
         "key": "urgentCpuPct",

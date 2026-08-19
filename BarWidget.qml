@@ -26,7 +26,7 @@ Panel {
 
   readonly property var shownKeys: Model.normalizeShow(setting("show", Model.DEFAULT_SHOW))
   readonly property var thresholds: Model.thresholdsFrom(settings)
-  readonly property var barSegs: sys.ready ? Model.barSegments(shownKeys, sys.barData, thresholds) : []
+  readonly property var barSegs: Service.ready ? Model.barSegments(shownKeys, Service.barData, thresholds) : []
   // The placeholder icon also covers the not-yet-sampled window right after
   // the shell starts, so the widget is clickable from the first frame.
   readonly property bool placeholderOnly: barSegs.length === 0
@@ -57,13 +57,13 @@ Panel {
     return parts.join("&#160;&#160;")
   }
 
-  readonly property var verticalLines: sys.ready
-    ? Model.barLines(shownKeys, sys.barData, thresholds)
+  readonly property var verticalLines: Service.ready
+    ? Model.barLines(shownKeys, Service.barData, thresholds)
     : [{ text: Model.PLACEHOLDER_ICON, urgent: false }]
 
   readonly property var tabs: {
     var t = ["CPU", "MEM", "GPU", "DISK", "NET", "PROC", "TEMP"]
-    if (sys.batteries.length > 0) t.push("BAT")
+    if (Service.batteries.length > 0) t.push("BAT")
     t.push("BAR")
     return t
   }
@@ -97,12 +97,6 @@ Panel {
     return fraction >= 0.9 ? root.urgent : Color.accent
   }
 
-  function histPeak(values) {
-    var peak = 0
-    for (var i = 0; i < values.length; i++) if (values[i] > peak) peak = values[i]
-    return peak
-  }
-
   // BAR tab rows: shown metrics first, in bar order, then the rest. The
   // battery metric only appears on machines that have one.
   readonly property var metricRows: {
@@ -115,7 +109,7 @@ Panel {
     for (i = 0; i < Model.METRICS.length; i++) {
       var metric = Model.METRICS[i]
       if (shownKeys.indexOf(metric.key) !== -1) continue
-      if (metric.key === "bat" && sys.batteries.length === 0) continue
+      if (metric.key === "bat" && Service.batteries.length === 0) continue
       rows.push(metric)
     }
     return rows
@@ -124,15 +118,19 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  onOpenedChanged: if (opened) {
-    sys.refresh()
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  onOpenedChanged: {
+    if (opened) {
+      Service.panelOpened()
+      Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    } else {
+      Service.panelClosed()
+    }
   }
 
-  Service {
-    id: sys
-    settings: root.settings
-  }
+  // One shared Service sampler runs for every bar surface; each widget
+  // instance pushes its (identical) inline settings into the singleton.
+  onSettingsChanged: Service.settings = root.settings
+  Component.onCompleted: Service.settings = root.settings
 
   IpcHandler {
     target: root.ipcTarget
@@ -141,7 +139,7 @@ Panel {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
-    function refresh(): string { sys.refresh(); return "ok" }
+    function refresh(): string { Service.refresh(); return "ok" }
     function tab(name: string): string {
       var upper = String(name).toUpperCase()
       if (root.tabs.indexOf(upper) === -1) return "unknown tab; use " + root.tabs.join("|")
@@ -159,13 +157,13 @@ Panel {
     hasVisualContent: root.bar && root.bar.vertical ? root.verticalLines.length > 0 : text !== ""
     fixedWidth: !(root.bar && root.bar.vertical) && root.placeholderOnly ? Style.bar.iconSlot : -1
     fixedHeight: root.bar && root.bar.vertical ? root.verticalLines.length * Style.bar.iconSlot : -1
-    tooltipText: sys.ready
-      ? sys.host + " · up " + Model.fmtUptime(sys.uptimeSec) + " · load " + sys.load1.toFixed(2)
+    tooltipText: Service.ready
+      ? Service.host + " · up " + Model.fmtUptime(Service.uptimeSec) + " · load " + Service.load1.toFixed(2)
       : "Argus"
 
     onPressed: function(b) {
       if (b === Qt.RightButton) { if (root.bar) root.bar.run("omarchy-launch-or-focus-tui btop") }
-      else if (b === Qt.MiddleButton) sys.refresh()
+      else if (b === Qt.MiddleButton) Service.refresh()
       else root.toggle()
     }
 
@@ -223,7 +221,7 @@ Panel {
         else if (dy !== 0) flick.scrollBy(dy * Style.space(110))
       }
       onTextKey: function(text) {
-        if (text === "r" || text === "R") sys.refresh()
+        if (text === "r" || text === "R") Service.refresh()
       }
 
       Column {
@@ -235,9 +233,9 @@ Panel {
 
         PanelHero {
           width: parent.width
-          title: sys.host !== "" ? sys.host : "Argus"
-          meta: sys.ready
-            ? "up " + Model.fmtUptime(sys.uptimeSec) + " · load " + sys.load1.toFixed(2) + " " + sys.load5.toFixed(2) + " " + sys.load15.toFixed(2)
+          title: Service.host !== "" ? Service.host : "Argus"
+          meta: Service.ready
+            ? "up " + Model.fmtUptime(Service.uptimeSec) + " · load " + Service.load1.toFixed(2) + " " + Service.load5.toFixed(2) + " " + Service.load15.toFixed(2)
             : "Gathering data…"
           foreground: root.foreground
           fontFamily: root.fontFamily
@@ -259,7 +257,7 @@ Panel {
               fontFamily: root.fontFamily
               fontSize: Style.font.subtitle
               size: Style.space(28)
-              onClicked: sys.refresh()
+              onClicked: Service.refresh()
             }
           }
         }
@@ -318,23 +316,23 @@ Panel {
 
             NameHeader {
               title: "PROCESSOR"
-              name: sys.cpuName
+              name: Service.cpuName
             }
 
             MeterRow {
               label: "Usage"
-              value: Model.fmtPct(sys.cpuPct)
-              fraction: sys.cpuPct / 100
+              value: Model.fmtPct(Service.cpuPct)
+              fraction: Service.cpuPct / 100
             }
 
             Sparkline {
               width: parent.width
-              values: sys.cpuHist
+              values: Service.cpuHist
               maxValue: 100
             }
 
             Text {
-              text: sys.corePcts.length + " threads"
+              text: Service.corePcts.length + " threads"
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -345,7 +343,7 @@ Panel {
               spacing: Style.space(3)
 
               Repeater {
-                model: sys.corePcts
+                model: Service.corePcts
 
                 Rectangle {
                   required property real modelData
@@ -368,22 +366,27 @@ Panel {
 
             DetailRow {
               label: "Frequency"
-              value: sys.cpuMhz > 0 ? (sys.cpuMhz / 1000).toFixed(2) + " GHz" : ""
+              value: Service.cpuMhz > 0 ? (Service.cpuMhz / 1000).toFixed(2) + " GHz" : ""
             }
 
             DetailRow {
               label: "Temperature"
-              value: isFinite(sys.cpuTempC) ? Model.fmtTemp(sys.cpuTempC) : ""
+              value: isFinite(Service.cpuTempC) ? Model.fmtTemp(Service.cpuTempC) : ""
+            }
+
+            DetailRow {
+              label: "Peak temperature (session)"
+              value: isFinite(Service.peakCpuTemp) ? Model.fmtTemp(Service.peakCpuTemp) : ""
             }
 
             DetailRow {
               label: "Load 1 / 5 / 15 min"
-              value: sys.ready ? sys.load1.toFixed(2) + " / " + sys.load5.toFixed(2) + " / " + sys.load15.toFixed(2) : ""
+              value: Service.ready ? Service.load1.toFixed(2) + " / " + Service.load5.toFixed(2) + " / " + Service.load15.toFixed(2) : ""
             }
 
             DetailRow {
               label: "Uptime"
-              value: sys.ready ? Model.fmtUptime(sys.uptimeSec) : ""
+              value: Service.ready ? Model.fmtUptime(Service.uptimeSec) : ""
             }
           }
 
@@ -400,27 +403,27 @@ Panel {
             }
 
             MeterRow {
-              label: "RAM · " + Model.fmtBytes(sys.memUsed) + " of " + Model.fmtBytes(sys.memTotal)
-              value: Model.fmtPct(sys.memPct)
-              fraction: sys.memPct / 100
+              label: "RAM · " + Model.fmtBytes(Service.memUsed) + " of " + Model.fmtBytes(Service.memTotal)
+              value: Model.fmtPct(Service.memPct)
+              fraction: Service.memPct / 100
             }
 
             Sparkline {
               width: parent.width
-              values: sys.memHist
+              values: Service.memHist
               maxValue: 100
             }
 
             MeterRow {
-              visible: sys.swapTotal > 0
-              label: "Swap · " + Model.fmtBytes(sys.swapUsed) + " of " + Model.fmtBytes(sys.swapTotal)
-              value: Model.fmtPct(sys.swapPct)
-              fraction: sys.swapPct / 100
+              visible: Service.swapTotal > 0
+              label: "Swap · " + Model.fmtBytes(Service.swapUsed) + " of " + Model.fmtBytes(Service.swapTotal)
+              value: Model.fmtPct(Service.swapPct)
+              fraction: Service.swapPct / 100
             }
 
             DetailRow {
               label: "Available"
-              value: sys.ready ? Model.fmtBytes(sys.memTotal - sys.memUsed) : ""
+              value: Service.ready ? Model.fmtBytes(Service.memTotal - Service.memUsed) : ""
             }
           }
 
@@ -431,7 +434,7 @@ Panel {
             spacing: Style.space(10)
 
             Text {
-              visible: sys.gpus.length === 0 && !sys.nvidiaSuspended
+              visible: Service.gpus.length === 0 && !Service.nvidiaSuspended
               width: parent.width
               text: "No supported GPU detected (amdgpu sysfs or nvidia-smi)."
               color: root.dim
@@ -441,7 +444,7 @@ Panel {
             }
 
             Text {
-              visible: sys.gpus.length === 0 && sys.nvidiaSuspended
+              visible: Service.gpus.length === 0 && Service.nvidiaSuspended
               width: parent.width
               text: "NVIDIA GPU is runtime-suspended (asleep); stats resume when it wakes."
               color: root.dim
@@ -451,15 +454,17 @@ Panel {
             }
 
             Repeater {
-              model: sys.gpus
+              model: Service.gpus
 
               Column {
+                id: gpuBlock
                 required property var modelData
+                readonly property bool isPrimary: Service.primaryGpu && Service.primaryGpu.card === modelData.card
                 width: parent.width
                 spacing: Style.space(6)
 
                 NameHeader {
-                  title: sys.primaryGpu && sys.primaryGpu.card === modelData.card && sys.gpus.length > 1
+                  title: gpuBlock.isPrimary && Service.gpus.length > 1
                     ? modelData.label + " · PRIMARY"
                     : modelData.label
                   name: modelData.name
@@ -477,6 +482,13 @@ Panel {
                   fraction: (modelData.busy || 0) / 100
                 }
 
+                Sparkline {
+                  visible: gpuBlock.isPrimary && !modelData.asleep
+                  width: parent.width
+                  values: Service.gpuHist
+                  maxValue: 100
+                }
+
                 MeterRow {
                   visible: !modelData.asleep && modelData.vramTotal > 0
                   label: "VRAM · " + Model.fmtBytes(modelData.vramUsed) + " of " + Model.fmtBytes(modelData.vramTotal)
@@ -487,6 +499,16 @@ Panel {
                 DetailRow {
                   label: "Temperature"
                   value: isFinite(modelData.celsius) ? Model.fmtTemp(modelData.celsius) : ""
+                }
+
+                DetailRow {
+                  label: "Peak temperature (session)"
+                  value: gpuBlock.isPrimary && isFinite(Service.peakGpuTemp) ? Model.fmtTemp(Service.peakGpuTemp) : ""
+                }
+
+                DetailRow {
+                  label: "Power draw"
+                  value: isFinite(modelData.powerW) && modelData.powerW > 0 ? Model.fmtWatts(modelData.powerW) : ""
                 }
               }
             }
@@ -499,7 +521,7 @@ Panel {
             spacing: Style.space(10)
 
             Repeater {
-              model: sys.disks
+              model: Service.disks
 
               Column {
                 required property var modelData
@@ -527,11 +549,18 @@ Panel {
 
             DetailRow {
               label: "Total"
-              value: sys.ready ? "R " + Model.fmtBytes(sys.ioRead) + "/s · W " + Model.fmtBytes(sys.ioWrite) + "/s" : ""
+              value: Service.ready ? "R " + Model.fmtBytes(Service.ioRead) + "/s · W " + Model.fmtBytes(Service.ioWrite) + "/s" : ""
+            }
+
+            DetailRow {
+              label: "Session peak"
+              value: Service.ready && (Service.peakIoRead > 0 || Service.peakIoWrite > 0)
+                ? "R " + Model.fmtBytes(Service.peakIoRead) + "/s · W " + Model.fmtBytes(Service.peakIoWrite) + "/s"
+                : ""
             }
 
             Repeater {
-              model: sys.ioDisks
+              model: Service.ioDisks
 
               DetailRow {
                 required property var modelData
@@ -555,11 +584,11 @@ Panel {
 
             DetailRow {
               label: "Total"
-              value: sys.ready ? "\u{f0045} " + Model.fmtBytes(sys.netDown) + "/s   \u{f005d} " + Model.fmtBytes(sys.netUp) + "/s" : ""
+              value: Service.ready ? "\u{f0045} " + Model.fmtBytes(Service.netDown) + "/s   \u{f005d} " + Model.fmtBytes(Service.netUp) + "/s" : ""
             }
 
             Text {
-              text: "Download · peak " + Model.fmtBytes(root.histPeak(sys.netDownHist)) + "/s"
+              text: "Download · session peak " + Model.fmtBytes(Service.peakNetDown) + "/s"
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -567,12 +596,12 @@ Panel {
 
             Sparkline {
               width: parent.width
-              values: sys.netDownHist
+              values: Service.netDownHist
               heat: false
             }
 
             Text {
-              text: "Upload · peak " + Model.fmtBytes(root.histPeak(sys.netUpHist)) + "/s"
+              text: "Upload · session peak " + Model.fmtBytes(Service.peakNetUp) + "/s"
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -580,12 +609,12 @@ Panel {
 
             Sparkline {
               width: parent.width
-              values: sys.netUpHist
+              values: Service.netUpHist
               heat: false
             }
 
             Repeater {
-              model: sys.netIfaces
+              model: Service.netIfaces
 
               DetailRow {
                 required property var modelData
@@ -609,7 +638,7 @@ Panel {
             }
 
             Repeater {
-              model: sys.psCpu
+              model: Service.psCpu
 
               DetailRow {
                 required property var modelData
@@ -625,12 +654,12 @@ Panel {
             }
 
             Repeater {
-              model: sys.psMem
+              model: Service.psMem
 
               DetailRow {
                 required property var modelData
                 label: modelData.comm + " · " + modelData.pid
-                value: Model.fmtBytes(sys.memTotal * modelData.mem / 100)
+                value: Model.fmtBytes(Service.memTotal * modelData.mem / 100)
               }
             }
           }
@@ -648,7 +677,7 @@ Panel {
             }
 
             Repeater {
-              model: sys.temps
+              model: Service.temps
 
               DetailRow {
                 required property var modelData
@@ -658,14 +687,14 @@ Panel {
             }
 
             PanelSectionHeader {
-              visible: sys.fans.length > 0
+              visible: Service.fans.length > 0
               text: "FANS"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
 
             Repeater {
-              model: sys.fans
+              model: Service.fans
 
               DetailRow {
                 required property var modelData
@@ -682,7 +711,7 @@ Panel {
             spacing: Style.space(10)
 
             Repeater {
-              model: sys.batteries
+              model: Service.batteries
 
               Column {
                 id: batteryBlock
@@ -729,8 +758,8 @@ Panel {
             }
 
             DetailRow {
-              label: sys.battery && sys.battery.charging ? "Time to full" : "Time remaining"
-              value: sys.battery && isFinite(sys.battery.timeSec) ? Model.fmtUptime(sys.battery.timeSec) : ""
+              label: Service.battery && Service.battery.charging ? "Time to full" : "Time remaining"
+              value: Service.battery && isFinite(Service.battery.timeSec) ? Model.fmtUptime(Service.battery.timeSec) : ""
             }
           }
 

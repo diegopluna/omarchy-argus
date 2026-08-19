@@ -7,6 +7,11 @@ const Model = require(path.join(__dirname, "..", "Model.js"))
 
 const assert = require("assert")
 
+// CI runners are VMs without hwmon sensors or predictable disks; gate the
+// hardware-shaped live assertions there. Everything fixture-based runs
+// everywhere.
+const CI = !!process.env.CI
+
 const script = path.join(__dirname, "..", "sample.sh")
 const text = execSync("bash " + script).toString()
 const sample = Model.parseSample(text)
@@ -18,7 +23,7 @@ assert.ok(sample.mem.total > 0, "MemTotal parsed")
 assert.ok(sample.load.uptimeSec > 0, "uptime parsed")
 assert.ok(sample.disks.length > 0, "disks parsed")
 assert.ok(sample.disks.every(d => d.size > 0))
-assert.ok(sample.temps.length > 0, "temps parsed")
+if (!CI) assert.ok(sample.temps.length > 0, "temps parsed")
 assert.ok(sample.io.length > 0, "diskstats parsed")
 assert.ok(sample.psCpu.length > 0, "top-cpu processes parsed")
 assert.ok(sample.psMem.length > 0, "top-mem processes parsed")
@@ -35,6 +40,9 @@ assert.ok(Object.keys(merged.diskModels).length > 0, "disk models from static ha
 const dynamicOnly = Model.parseSample(dynamicText)
 assert.strictEqual(dynamicOnly.host, "", "dynamic half carries no identity")
 assert.ok(dynamicOnly.cpus.length > 1, "dynamic half carries the stats")
+assert.strictEqual(dynamicOnly.psCpu.length, 0, "processes skipped while no panel is open")
+const panelText = execSync("bash " + script + " dynamic panel").toString()
+assert.ok(Model.parseSample(panelText).psCpu.length > 0, "processes sampled with the panel flag")
 
 // Second sample for deltas.
 const text2 = execSync("bash " + script).toString()
@@ -48,8 +56,10 @@ assert.ok(rates.down >= 0 && rates.up >= 0)
 
 const io = Model.ioRates(sample.io, sample2.io, 1, sample.diskModels, sample.diskLinks)
 assert.ok(io.read >= 0 && io.write >= 0)
-assert.ok(io.perDisk.length > 0, "whole disks found in diskstats")
-assert.ok(io.perDisk.every(d => !/p\d+$/.test(d.dev)), "partitions filtered out")
+if (!CI) {
+  assert.ok(io.perDisk.length > 0, "whole disks found in diskstats")
+  assert.ok(io.perDisk.every(d => !/p\d+$/.test(d.dev)), "partitions filtered out")
+}
 
 const gpu = Model.primaryGpu(sample.gpus)
 if (sample.gpus.length > 0) {
@@ -84,10 +94,11 @@ assert.ok(barText.includes("61%"), "bar shows ram")
 assert.ok(barText.includes("1.86"), "bar shows load")
 assert.ok(Model.metricValue("io", barData).includes("R1.0M"), "io metric renders rates")
 
-// NVIDIA parsing (fixture-based: nvidia-smi csv,noheader,nounits output).
+// NVIDIA parsing (fixture-based: nvidia-smi csv,noheader,nounits output,
+// now including power.draw).
 const nv = Model.parseNvidia([
-  "0, NVIDIA GeForce RTX 3080, 5, 45, 1024, 10240",
-  "1, NVIDIA RTX A6000, [N/A], 38, 512, 49140"
+  "0, NVIDIA GeForce RTX 3080, 5, 45, 1024, 10240, 98.5",
+  "1, NVIDIA RTX A6000, [N/A], 38, 512, 49140, [N/A]"
 ])
 assert.strictEqual(nv.length, 2)
 assert.strictEqual(nv[0].card, "nv0")
@@ -96,7 +107,9 @@ assert.strictEqual(nv[0].busy, 5)
 assert.strictEqual(nv[0].celsius, 45)
 assert.strictEqual(nv[0].vramUsed, 1024 * 1048576)
 assert.strictEqual(nv[0].vramTotal, 10240 * 1048576)
+assert.strictEqual(nv[0].powerW, 98.5)
 assert.ok(Number.isNaN(nv[1].busy), "[N/A] utilization -> NaN")
+assert.ok(Number.isNaN(nv[1].powerW), "[N/A] power -> NaN")
 assert.strictEqual(nv[1].celsius, 38)
 // Bar hides the gpu segment when utilization is unsupported.
 assert.strictEqual(Model.metricValue("gpu", { gpu: nv[1] }), "")
@@ -108,11 +121,13 @@ const hybrid = Model.primaryGpu([{ card: "0", vramTotal: 512 * 1048576 }, nv[0]]
 assert.strictEqual(hybrid.card, "nv0")
 // GPU names arrive via the static GPUNAMES section.
 const nvSample = Model.parseSample(
-  "###GPUNAMES\n0|Vendor [X] Foo [Radeon RX]\n###GPU\n0|25|100|200|48000\n###NVIDIA\n0, NVIDIA GeForce RTX 4070, 12, 51, 2048, 12282")
+  "###GPUNAMES\n0|Vendor [X] Foo [Radeon RX]\n###GPU\n0|25|100|200|48000|12000000\n###NVIDIA\n0, NVIDIA GeForce RTX 4070, 12, 51, 2048, 12282, 45.2")
 assert.strictEqual(nvSample.gpus.length, 2)
 assert.strictEqual(nvSample.gpus[0].label, "GPU 0")
 assert.strictEqual(nvSample.gpus[0].name, "Radeon RX")
+assert.strictEqual(nvSample.gpus[0].powerW, 12, "amdgpu power µW → W")
 assert.strictEqual(nvSample.gpus[1].label, "GPU 0 (NVIDIA)")
+assert.strictEqual(nvSample.gpus[1].powerW, 45.2)
 
 // Runtime-suspended NVIDIA: sampler emits "suspended"; last-known values
 // replay as an asleep card that renders nothing in the bar.
@@ -126,6 +141,11 @@ assert.strictEqual(asleep.vramTotal, nv[0].vramTotal, "keeps primary-GPU ranking
 assert.strictEqual(Model.metricValue("gpu", { gpu: asleep }), "", "asleep gpu hides")
 assert.strictEqual(Model.metricValue("gputemp", { gpu: asleep }), "")
 assert.strictEqual(Model.metricValue("vram", { gpu: asleep }), "")
+
+// Implausible Super I/O temperatures are dropped, real ones kept.
+const junk = Model.parseSample("###TEMP\nnct6799|AUXTIN1|-62000|\nnct6799|SYSTIN|32000|\nk10temp|Tctl|48000|")
+assert.strictEqual(junk.temps.length, 2, "bogus -62° input filtered")
+assert.strictEqual(Model.cpuTemp(junk.temps), 48)
 
 // Fans share the temp line shape; zero RPM is kept.
 const fans = Model.parseFans(["nct6798|fan2|1250|", "amdgpu||0|"])
@@ -164,6 +184,15 @@ assert.strictEqual(Model.batteryIcon(50, true), "\u{f0084}")
 assert.strictEqual(Model.metricUrgent("bat", { battery: summary }, null), false)
 const low = Model.batterySummary(Model.parseBattery(["BAT0|Discharging|12|6000000|57000000|60500000|8300000|X"]))
 assert.strictEqual(Model.metricUrgent("bat", { battery: low }, null), true, "low battery urgent")
+
+// Alert messages reuse the threshold config.
+assert.strictEqual(
+  Model.alertText("cputemp", { cpuTemp: 92.4 }, Model.thresholdsFrom({})),
+  "CPU temperature at 92° (threshold 85°)")
+assert.strictEqual(
+  Model.alertText("bat", { battery: low }, null),
+  "Battery at 11% (threshold 15%)")
+assert.ok(Model.ALERT_KEYS.indexOf("load") === -1, "load never alerts")
 
 // Urgency thresholds.
 const th = Model.thresholdsFrom({ urgentCpuPct: 80 })
