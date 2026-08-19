@@ -325,6 +325,20 @@ assert.deepStrictEqual(Model.normalizeSensorThresholds({ good: 75, low: 5, junk:
 assert.strictEqual(Model.suggestedSensorThreshold(62), 75, "current+10 on a 5° grid")
 assert.strictEqual(Model.suggestedSensorThreshold(NaN), 70)
 
+// Hidden sensors: dedup, toggle round-trips.
+let hidden = Model.toggleHiddenSensor(null, "nct6799||AUXTIN1")
+assert.deepStrictEqual(hidden, ["nct6799||AUXTIN1"])
+hidden = Model.toggleHiddenSensor(hidden, "nct6799||AUXTIN5")
+assert.strictEqual(hidden.length, 2)
+assert.deepStrictEqual(Model.toggleHiddenSensor(hidden, "nct6799||AUXTIN1"), ["nct6799||AUXTIN5"])
+assert.deepStrictEqual(Model.normalizeHiddenSensors(["a", "a", 3, ""]), ["a"])
+
+// Process display names: argv0 path stripped, kernel threads untouched.
+assert.strictEqual(Model.procDisplay("/usr/lib/zen/zen-bin --flag x"), "zen-bin --flag x")
+assert.strictEqual(Model.procDisplay("[kworker/0:1-events]"), "[kworker/0:1-events]")
+assert.strictEqual(Model.procDisplay("Isolated Web Content"), "Isolated Web Content")
+assert.ok(sample.psCpu.every(p => p.comm.length > 0), "args-based names parsed")
+
 // Sparkline history is fixed-length and NaN-safe.
 let hist = []
 for (let i = 0; i < Model.HISTORY_LEN + 10; i++) hist = Model.pushHistory(hist, i)

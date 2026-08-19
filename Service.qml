@@ -92,6 +92,13 @@ Singleton {
   property var gpuHist: []
   property var netDownHist: []
   property var netUpHist: []
+  property var ioReadHist: []
+  property var ioWriteHist: []
+
+  // The last few fired alerts, newest first: { at: epoch ms, text }.
+  // Notifications vanish; this answers "did anything trip while I was
+  // away?" from the panel.
+  property var alertLog: []
 
   // Highest values observed since the shell started.
   property real peakCpuTemp: NaN
@@ -185,6 +192,8 @@ Singleton {
       gpuHist = Model.pushHistory(gpuHist, primaryGpu ? primaryGpu.busy : 0)
       netDownHist = Model.pushHistory(netDownHist, netDown)
       netUpHist = Model.pushHistory(netUpHist, netUp)
+      ioReadHist = Model.pushHistory(ioReadHist, ioRead)
+      ioWriteHist = Model.pushHistory(ioWriteHist, ioWrite)
       if (netDown > peakNetDown) peakNetDown = netDown
       if (netUp > peakNetUp) peakNetUp = netUp
       if (ioRead > peakIoRead) peakIoRead = ioRead
@@ -223,6 +232,7 @@ Singleton {
     if (streak !== alertHoldTicks) return
     if (now - (_alertNotifiedAt[streakKey] || 0) < alertCooldownMs) return
     _alertNotifiedAt[streakKey] = now
+    alertLog = [{ at: now, text: message }].concat(alertLog).slice(0, 10)
     Quickshell.execDetached([
       "notify-send", "-a", "Argus", "-u", critical ? "critical" : "normal",
       "Argus", message

@@ -346,7 +346,18 @@ function parseFans(lines) {
   return result
 }
 
-// ps axo pid=,pcpu=,pmem=,comm= lines; comm is last so its spaces survive.
+// "/usr/lib/zen/zen-bin --flag" → "zen-bin --flag"; kernel threads
+// ("[kworker/…]") pass through untouched.
+function procDisplay(args) {
+  var s = String(args || "")
+  if (s.charAt(0) !== "/") return s
+  var space = s.indexOf(" ")
+  var head = space === -1 ? s : s.slice(0, space)
+  var tail = space === -1 ? "" : s.slice(space)
+  return head.slice(head.lastIndexOf("/") + 1) + tail
+}
+
+// ps axo pid=,pcpu=,pmem=,args= lines; args is last so its spaces survive.
 function parsePs(lines) {
   var result = []
   for (var i = 0; i < lines.length; i++) {
@@ -686,6 +697,26 @@ function suggestedSensorThreshold(celsius) {
   return Math.max(SENSOR_THRESHOLD_MIN, Math.min(SENSOR_THRESHOLD_MAX, Math.ceil(base / 5) * 5))
 }
 
+// User-hidden sensor rows (Super I/O chips expose junk inputs), persisted
+// as a list of sensor keys. Hidden sensors are only hidden — their
+// per-sensor thresholds keep alerting.
+function normalizeHiddenSensors(value) {
+  var list = value instanceof Array ? value : []
+  var result = []
+  for (var i = 0; i < list.length; i++) {
+    if (typeof list[i] === "string" && list[i] !== "" && result.indexOf(list[i]) === -1) result.push(list[i])
+  }
+  return result
+}
+
+function toggleHiddenSensor(current, key) {
+  var list = normalizeHiddenSensors(current)
+  var index = list.indexOf(key)
+  if (index >= 0) list.splice(index, 1)
+  else list.push(key)
+  return list
+}
+
 // The discrete GPU when there is one: the card with the most VRAM.
 function primaryGpu(gpus) {
   var best = null
@@ -942,6 +973,7 @@ if (typeof module !== "undefined") {
     parseDiskstats: parseDiskstats,
     parseFans: parseFans,
     parsePs: parsePs,
+    procDisplay: procDisplay,
     parseBattery: parseBattery,
     parsePsi: parsePsi,
     parseNetPhys: parseNetPhys,
@@ -956,6 +988,8 @@ if (typeof module !== "undefined") {
     suggestedSensorThreshold: suggestedSensorThreshold,
     SENSOR_THRESHOLD_MIN: SENSOR_THRESHOLD_MIN,
     SENSOR_THRESHOLD_MAX: SENSOR_THRESHOLD_MAX,
+    normalizeHiddenSensors: normalizeHiddenSensors,
+    toggleHiddenSensor: toggleHiddenSensor,
     cpuUsage: cpuUsage,
     netRates: netRates,
     ioRates: ioRates,

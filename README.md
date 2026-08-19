@@ -22,10 +22,10 @@ order in the panel's **BAR** tab; the choice persists to
 - **GPU** — every GPU (AMD via amdgpu sysfs, NVIDIA via nvidia-smi, Intel via hwmon): name, usage with sparkline history, VRAM, temperature with session peak, power draw
 - **DISK** — every real filesystem with its physical disk model (LUKS/LVM resolved via lsblk), live read/write rates per physical disk, PSI I/O pressure
 - **NET** — total and per-interface download/upload rates, with download/upload sparklines; virtual interfaces (VPN tunnels, bridges, veth) are listed but kept out of the totals so VPN traffic isn't counted twice
-- **PROC** — top processes by CPU and by memory
-- **TEMP** — every hwmon sensor with friendly names (CPU, GPU, NVMe with drive model, RAM, Wi-Fi, …), plus fan speeds; each sensor row can carry its own alert threshold, set inline
+- **PROC** — top processes by CPU and by memory (full command lines), each with a terminate button (SIGTERM, after confirmation)
+- **TEMP** — every hwmon sensor with friendly names (CPU, GPU, NVMe with drive model, RAM, Wi-Fi, …), plus fan speeds; each sensor row can carry its own alert threshold, set inline, and noisy sensors can be hidden (hidden sensors keep alerting)
 - **BAT** — per-battery charge, status, power draw, health, and time estimate (tab appears only when a system battery exists)
-- **BAR** — toggles and reorder arrows for which metrics the bar shows
+- **BAR** — toggles and reorder arrows for which metrics the bar shows, plus the last few fired alerts with timestamps
 
 | | |
 |---|---|
@@ -37,7 +37,8 @@ order in the panel's **BAR** tab; the choice persists to
 ## Interactions
 
 - Bar button: left click opens the panel, middle click refreshes, right click launches btop
-- Panel: `h`/`l` or ←/→ switch tabs, `j`/`k` or ↑/↓ scroll, `r` refreshes, `Esc` closes
+- Panel: `h`/`l` or ←/→ switch tabs, `1`–`9` or a tab's first letter jump straight to it, `j`/`k` or ↑/↓ scroll, `r` refreshes, `Esc` closes
+- Opening the panel while a metric is urgent lands on the tab that explains it
 
 ## Install
 
@@ -101,7 +102,9 @@ renders through the Omarchy shell), e.g. *"CPU temperature at 92°
 (threshold 85°)"*. Temperature and battery alerts use critical urgency;
 usage alerts are normal. Each metric then stays quiet for a 5-minute
 cooldown. Alerts evaluate every sampled metric, whether or not its bar
-segment is shown.
+segment is shown. The last ten fired alerts are kept, with timestamps, at
+the bottom of the BAR tab — for the "did anything trip while I was away?"
+question that a vanished notification can't answer.
 
 ## Fans
 
@@ -123,6 +126,7 @@ echo nct6775 | sudo tee /etc/modules-load.d/nct6775.conf
 omarchy-shell io.github.diegopluna.argus toggle
 omarchy-shell io.github.diegopluna.argus refresh
 omarchy-shell io.github.diegopluna.argus tab TEMP
+omarchy-shell io.github.diegopluna.argus metrics   # current snapshot as JSON, for scripts
 ```
 
 ## Data sources
@@ -153,3 +157,8 @@ always-on hot path. `df` and `lsblk` run under `timeout` so a stale
 network mount degrades one tick instead of freezing the widget. GPU power draw comes from amdgpu's hwmon
 `power1_average` and nvidia-smi's `power.draw`. Usage deltas are computed
 in QML.
+
+---
+
+*Argus Panoptes never sleeps. Should you ever doubt that all hundred eyes
+are still open, address him by name.*

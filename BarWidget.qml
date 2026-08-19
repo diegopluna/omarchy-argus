@@ -82,9 +82,79 @@ Panel {
 
   // Which TEMP-tab sensor row has its threshold editor expanded.
   property string editingSensor: ""
+  // Whether hidden sensor rows are temporarily revealed.
+  property bool showHiddenSensors: false
+  readonly property var hiddenSensors: Model.normalizeHiddenSensors(setting("hiddenSensors", []))
+  readonly property int hiddenSensorCount: {
+    var count = 0
+    for (var i = 0; i < Service.temps.length; i++) {
+      if (hiddenSensors.indexOf(Model.sensorKey(Service.temps[i])) !== -1) count++
+    }
+    return count
+  }
+
+  // Process pending a kill confirmation: { pid, name } or null.
+  property var pendingKill: null
+
+  // How much wall clock one full sparkline spans.
+  readonly property string histSpan: "last " + Model.fmtUptime(Model.HISTORY_LEN * Service.intervalSec)
 
   function setSensorLimit(key, value) {
     persistPluginSetting("sensorThresholds", Model.setSensorThreshold(setting("sensorThresholds", null), key, value))
+  }
+
+  function toggleSensorHidden(key) {
+    persistPluginSetting("hiddenSensors", Model.toggleHiddenSensor(setting("hiddenSensors", []), key))
+  }
+
+  // The tab that explains a bar segment's urgency.
+  function tabForKey(key) {
+    switch (key) {
+      case "cpu": case "cputemp": case "load": return "CPU"
+      case "ram": return "MEM"
+      case "gpu": case "gputemp": case "vram": return "GPU"
+      case "disk": case "io": return "DISK"
+      case "net": return "NET"
+      case "bat": return "BAT"
+      default: return ""
+    }
+  }
+
+  // ---- Easter egg: the hundred eyes of Argus Panoptes -------------------
+  property string _typed: ""
+  property bool eggActive: false
+
+  Timer {
+    id: eggTimer
+    interval: 6000
+    onTriggered: root.eggActive = false
+  }
+
+  function handlePanelKey(text) {
+    if (text.length !== 1) return
+    _typed = (_typed + text.toLowerCase()).slice(-5)
+    if (_typed === "argus") {
+      eggActive = true
+      eggTimer.restart()
+      return
+    }
+    if (text === "r" || text === "R") {
+      Service.refresh()
+      return
+    }
+    var digit = parseInt(text, 10)
+    if (!isNaN(digit) && digit >= 1 && digit <= tabs.length) {
+      tab = tabs[digit - 1]
+      return
+    }
+    // First-letter tab jump; repeated presses cycle ties (BAR/BAT).
+    var letter = text.toUpperCase()
+    if (letter < "A" || letter > "Z") return
+    var start = tabs.indexOf(tab)
+    for (var step = 1; step <= tabs.length; step++) {
+      var candidate = tabs[(start + step) % tabs.length]
+      if (candidate.charAt(0) === letter) { tab = candidate; return }
+    }
   }
 
   function persistPluginSetting(name, value) {
@@ -131,9 +201,18 @@ Panel {
   onOpenedChanged: {
     if (opened) {
       Service.panelOpened()
+      // Land on the tab that explains the problem, if there is one.
+      for (var i = 0; i < barSegs.length; i++) {
+        if (!barSegs[i].urgent) continue
+        var target = tabForKey(barSegs[i].key)
+        if (target !== "" && tabs.indexOf(target) !== -1) { tab = target; break }
+      }
       Qt.callLater(function() { keyCatcher.forceActiveFocus() })
     } else {
       Service.panelClosed()
+      pendingKill = null
+      eggActive = false
+      showHiddenSensors = false
     }
   }
 
@@ -150,6 +229,27 @@ Panel {
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
     function refresh(): string { Service.refresh(); return "ok" }
+    function metrics(): string {
+      return JSON.stringify({
+        host: Service.host,
+        uptimeSec: Service.uptimeSec,
+        load: [Service.load1, Service.load5, Service.load15],
+        cpuPct: Service.cpuPct,
+        cpuTempC: Service.cpuTempC,
+        memPct: Service.memPct,
+        memUsedBytes: Service.memUsed,
+        memTotalBytes: Service.memTotal,
+        netDownBps: Service.netDown,
+        netUpBps: Service.netUp,
+        ioReadBps: Service.ioRead,
+        ioWriteBps: Service.ioWrite,
+        gpus: Service.gpus.map(function(g) {
+          return { label: g.label, name: g.name, busyPct: g.busy, tempC: g.celsius, vramUsed: g.vramUsed, vramTotal: g.vramTotal, powerW: g.powerW, asleep: g.asleep === true }
+        }),
+        battery: Service.battery,
+        disks: Service.disks.map(function(d) { return { mount: d.mount, used: d.used, size: d.size } })
+      })
+    }
     function tab(name: string): string {
       var upper = String(name).toUpperCase()
       if (root.tabs.indexOf(upper) === -1) return "unknown tab; use " + root.tabs.join("|")
@@ -182,6 +282,7 @@ Panel {
     // label would paint it visibly off-center; when only the placeholder icon
     // shows, render through OpticalGlyph the way BarIconButton does.
     OpticalGlyph {
+      id: placeholderEye
       visible: !(root.bar && root.bar.vertical) && root.placeholderOnly
       anchors.centerIn: parent
       width: Style.bar.iconCanvas
@@ -190,6 +291,29 @@ Panel {
       fontFamily: button.fontFamily
       fontSize: Style.bar.iconFont
       color: button.foreground
+
+      // Even the ever-watchful eye blinks now and then.
+      property real blinkY: 1
+      transform: Scale {
+        origin.y: placeholderEye.height / 2
+        yScale: placeholderEye.blinkY
+      }
+
+      Timer {
+        running: placeholderEye.visible
+        repeat: true
+        interval: 6000
+        onTriggered: {
+          blinkAnim.restart()
+          interval = 5000 + Math.round(Math.random() * 9000)
+        }
+      }
+
+      SequentialAnimation {
+        id: blinkAnim
+        NumberAnimation { target: placeholderEye; property: "blinkY"; to: 0.08; duration: 70 }
+        NumberAnimation { target: placeholderEye; property: "blinkY"; to: 1; duration: 110 }
+      }
     }
 
     Column {
@@ -225,15 +349,17 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      onCloseRequested: root.close()
+      onCloseRequested: {
+        if (confirmKill.opened) { root.pendingKill = null; return }
+        if (root.eggActive) { root.eggActive = false; return }
+        root.close()
+      }
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onMoveRequested: function(dx, dy) {
         if (dx !== 0) root.switchTab(dx)
         else if (dy !== 0) flick.scrollBy(dy * Style.space(110))
       }
-      onTextKey: function(text) {
-        if (text === "r" || text === "R") Service.refresh()
-      }
+      onTextKey: function(text) { root.handlePanelKey(text) }
 
       Column {
         id: header
@@ -244,10 +370,12 @@ Panel {
 
         PanelHero {
           width: parent.width
-          title: Service.host !== "" ? Service.host : "Argus"
-          meta: Service.ready
-            ? "up " + Model.fmtUptime(Service.uptimeSec) + " · load " + Service.load1.toFixed(2) + " " + Service.load5.toFixed(2) + " " + Service.load15.toFixed(2)
-            : "Gathering data…"
+          title: root.eggActive ? "ARGUS PANOPTES" : (Service.host !== "" ? Service.host : "Argus")
+          meta: root.eggActive
+            ? "One hundred eyes, ever watchful."
+            : (Service.ready
+              ? "up " + Model.fmtUptime(Service.uptimeSec) + " · load " + Service.load1.toFixed(2) + " " + Service.load5.toFixed(2) + " " + Service.load15.toFixed(2)
+              : "Gathering data…")
           foreground: root.foreground
           fontFamily: root.fontFamily
           iconComponent: Component {
@@ -343,6 +471,13 @@ Panel {
             }
 
             Text {
+              text: root.histSpan
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            Text {
               text: Service.corePcts.length + " threads"
               color: root.dim
               font.family: root.fontFamily
@@ -433,6 +568,13 @@ Panel {
               width: parent.width
               values: Service.memHist
               maxValue: 100
+            }
+
+            Text {
+              text: root.histSpan
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
             }
 
             MeterRow {
@@ -527,6 +669,14 @@ Panel {
                   maxValue: 100
                 }
 
+                Text {
+                  visible: gpuBlock.isPrimary && !modelData.asleep && isFinite(modelData.busy)
+                  text: root.histSpan
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+
                 MeterRow {
                   visible: !modelData.asleep && modelData.vramTotal > 0
                   label: "VRAM · " + Model.fmtBytes(modelData.vramUsed) + " of " + Model.fmtBytes(modelData.vramTotal)
@@ -604,6 +754,32 @@ Panel {
                 : ""
             }
 
+            Text {
+              text: "Read · session peak " + Model.fmtBytes(Service.peakIoRead) + "/s · " + root.histSpan
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            Sparkline {
+              width: parent.width
+              values: Service.ioReadHist
+              heat: false
+            }
+
+            Text {
+              text: "Write · session peak " + Model.fmtBytes(Service.peakIoWrite) + "/s · " + root.histSpan
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            Sparkline {
+              width: parent.width
+              values: Service.ioWriteHist
+              heat: false
+            }
+
             Repeater {
               model: Service.ioDisks
 
@@ -633,7 +809,7 @@ Panel {
             }
 
             Text {
-              text: "Download · session peak " + Model.fmtBytes(Service.peakNetDown) + "/s"
+              text: "Download · session peak " + Model.fmtBytes(Service.peakNetDown) + "/s · " + root.histSpan
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -646,7 +822,7 @@ Panel {
             }
 
             Text {
-              text: "Upload · session peak " + Model.fmtBytes(Service.peakNetUp) + "/s"
+              text: "Upload · session peak " + Model.fmtBytes(Service.peakNetUp) + "/s · " + root.histSpan
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -685,9 +861,9 @@ Panel {
             Repeater {
               model: Service.psCpu
 
-              DetailRow {
+              ProcRow {
                 required property var modelData
-                label: modelData.comm + " · " + modelData.pid
+                proc: modelData
                 value: modelData.cpu.toFixed(1) + "%"
               }
             }
@@ -701,11 +877,20 @@ Panel {
             Repeater {
               model: Service.psMem
 
-              DetailRow {
+              ProcRow {
                 required property var modelData
-                label: modelData.comm + " · " + modelData.pid
+                proc: modelData
                 value: Model.fmtBytes(Service.memTotal * modelData.mem / 100)
               }
+            }
+
+            Text {
+              width: parent.width
+              text: "\u{f0156} sends SIGTERM after confirmation."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
           }
 
@@ -731,6 +916,8 @@ Panel {
                 readonly property real limit: Model.sensorThreshold(Service.sensorThresholds, modelData)
                 readonly property bool over: isFinite(limit) && modelData.celsius >= limit
                 readonly property bool editing: root.editingSensor === skey
+                readonly property bool hiddenSensor: root.hiddenSensors.indexOf(skey) !== -1
+                visible: !hiddenSensor || root.showHiddenSensors
                 width: parent.width
                 spacing: Style.space(4)
 
@@ -760,6 +947,16 @@ Panel {
                     color: sensorRow.over ? root.urgent : root.foreground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
+                  }
+
+                  PanelActionButton {
+                    iconText: sensorRow.hiddenSensor ? "\u{f0208}" : "\u{f0209}"
+                    tooltipText: sensorRow.hiddenSensor ? "Show this sensor" : "Hide this sensor"
+                    foreground: sensorRow.hiddenSensor ? Color.accent : root.dim
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.bodySmall
+                    size: Style.space(22)
+                    onClicked: root.toggleSensorHidden(sensorRow.skey)
                   }
 
                   PanelActionButton {
@@ -841,8 +1038,26 @@ Panel {
             }
 
             Text {
+              visible: root.hiddenSensorCount > 0
               width: parent.width
-              text: "\u{f009a} sets a per-sensor alert threshold — the row turns urgent and a notification fires when it stays above the limit."
+              text: root.showHiddenSensors
+                ? "Done showing hidden sensors"
+                : root.hiddenSensorCount + " hidden sensor" + (root.hiddenSensorCount === 1 ? "" : "s") + " · show"
+              color: Color.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              horizontalAlignment: Text.AlignHCenter
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.showHiddenSensors = !root.showHiddenSensors
+              }
+            }
+
+            Text {
+              width: parent.width
+              text: "\u{f009a} sets a per-sensor alert threshold — the row turns urgent and a notification fires when it stays above the limit. \u{f0209} hides a sensor row (thresholds keep alerting)."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -1002,6 +1217,27 @@ Panel {
               }
             }
 
+            PanelSectionHeader {
+              visible: Service.alertLog.length > 0
+              text: "RECENT ALERTS"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Repeater {
+              model: Service.alertLog
+
+              Text {
+                required property var modelData
+                width: parent.width
+                text: Qt.formatTime(new Date(modelData.at), "HH:mm") + " · " + modelData.text
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+            }
+
             Text {
               width: parent.width
               text: "Bar order follows this list · segments turn " + "urgent past thresholds (see plugin settings)"
@@ -1025,13 +1261,81 @@ Panel {
 
           Text {
             width: parent.width
-            text: "h/l: tabs · j/k: scroll · r: refresh"
+            text: "h/l, 1-9, or first letter: tabs · j/k: scroll · r: refresh"
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
             horizontalAlignment: Text.AlignHCenter
           }
         }
+      }
+
+      // The hundred eyes of Argus Panoptes. Some say they can be summoned
+      // by speaking his name.
+      Item {
+        id: eggOverlay
+        anchors.fill: parent
+        visible: root.eggActive
+        z: 80
+
+        Repeater {
+          model: 100
+
+          OpticalGlyph {
+            id: eggEye
+            required property int index
+            readonly property real rx: Math.random()
+            readonly property real ry: Math.random()
+            readonly property real eyeSize: Style.font.body + Math.random() * Style.space(16)
+            x: rx * Math.max(1, eggOverlay.width - width)
+            y: ry * Math.max(1, eggOverlay.height - height)
+            width: eyeSize
+            height: eyeSize
+            text: Model.PLACEHOLDER_ICON
+            fontFamily: root.fontFamily
+            fontSize: eyeSize
+            color: index % 5 === 0 ? Color.accent : root.foreground
+            opacity: 0
+
+            SequentialAnimation on opacity {
+              running: root.eggActive
+              PauseAnimation { duration: eggEye.index * 20 }
+              NumberAnimation { to: 0.85; duration: 250 }
+
+              SequentialAnimation {
+                loops: Animation.Infinite
+                PauseAnimation { duration: 900 + (eggEye.index % 13) * 260 }
+                NumberAnimation { to: 0.15; duration: 70 }
+                NumberAnimation { to: 0.85; duration: 130 }
+              }
+            }
+          }
+        }
+      }
+
+      ConfirmDialog {
+        id: confirmKill
+        anchors.fill: parent
+        z: 90
+        opened: root.pendingKill !== null
+        message: root.pendingKill
+          ? "Terminate " + root.pendingKill.name + " (PID " + root.pendingKill.pid + ")?"
+          : ""
+        confirmText: "Terminate"
+        fontFamily: root.fontFamily
+        onCanceled: root.pendingKill = null
+        onConfirmed: {
+          Quickshell.execDetached(["kill", String(root.pendingKill.pid)])
+          root.pendingKill = null
+          killRefresh.restart()
+        }
+      }
+
+      // Give the terminated process a beat to exit before resampling.
+      Timer {
+        id: killRefresh
+        interval: 700
+        onTriggered: Service.refresh()
       }
     }
   }
@@ -1057,6 +1361,46 @@ Panel {
       font.family: root.fontFamily
       font.pixelSize: Style.font.body
       wrapMode: Text.WordWrap
+    }
+  }
+
+  // Process row: elided command line, metric value, and a terminate button
+  // that arms the confirm dialog.
+  component ProcRow: RowLayout {
+    id: procRow
+    property var proc: null
+    property string value: ""
+    width: parent ? parent.width : 0
+    spacing: Style.space(8)
+
+    Text {
+      Layout.fillWidth: true
+      text: procRow.proc ? Model.procDisplay(procRow.proc.comm) + " · " + procRow.proc.pid : ""
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+      elide: Text.ElideRight
+    }
+
+    Text {
+      text: procRow.value
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+    }
+
+    PanelActionButton {
+      iconText: "\u{f0156}"
+      tooltipText: "Terminate (SIGTERM)"
+      hoverColor: root.urgent
+      foreground: root.dim
+      fontFamily: root.fontFamily
+      fontSize: Style.font.bodySmall
+      size: Style.space(22)
+      onClicked: root.pendingKill = {
+        pid: procRow.proc.pid,
+        name: Model.procDisplay(procRow.proc.comm).split(" ")[0]
+      }
     }
   }
 

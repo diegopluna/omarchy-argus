@@ -181,11 +181,13 @@ fi
 # Top processes are only visible in the open panel; skip them on the
 # always-on bar tick.
 if [ "$mode" = "all" ] || [ "$panel" = "panel" ]; then
+  # args= instead of comm=: comm truncates at 15 chars ("Isolated Web Co");
+  # cut keeps browser-length command lines bounded.
   echo '###PSCPU'
-  ps axo pid=,pcpu=,pmem=,comm= --sort=-pcpu 2>/dev/null | head -n 10
+  ps axo pid=,pcpu=,pmem=,args= --sort=-pcpu 2>/dev/null | head -n 10 | cut -c1-140
 
   echo '###PSMEM'
-  ps axo pid=,pcpu=,pmem=,comm= --sort=-pmem 2>/dev/null | head -n 10
+  ps axo pid=,pcpu=,pmem=,args= --sort=-pmem 2>/dev/null | head -n 10 | cut -c1-140
 fi
 
 echo '###BAT'

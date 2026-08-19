@@ -4,6 +4,30 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] — 2026-08-19
+
+### Added
+- Terminate button on PROC rows: SIGTERM after a confirmation dialog
+  (Esc cancels the dialog before it closes the panel).
+- Recent-alerts log: the last ten fired alerts with timestamps, shown at
+  the bottom of the BAR tab.
+- Hide noisy sensors: an eye button per TEMP row persists a
+  `hiddenSensors` list; a footer row reveals them again. Hidden sensors'
+  thresholds keep alerting.
+- Tab hotkeys: `1`–`9` and first-letter jumps (repeats cycle BAR/BAT);
+  opening the panel while a metric is urgent lands on the relevant tab.
+- `metrics` IPC method returning the current snapshot as JSON, for
+  scripting: `omarchy-shell io.github.diegopluna.argus metrics`.
+- Sparklines everywhere state their timespan ("last 2m"), and the DISK
+  tab gains read/write sparklines.
+- One or two things are better discovered than documented.
+
+### Changed
+- PROC shows full command lines (argv0 path stripped) instead of the
+  kernel's 15-character `comm` truncation.
+- Refreshed screenshots and the Okomart `preview.png`, which still showed
+  the 0.2.x panel.
+
 ## [0.6.0] — 2026-08-19
 
 ### Added
