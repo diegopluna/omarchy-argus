@@ -23,7 +23,7 @@ order in the panel's **BAR** tab; the choice persists to
 - **DISK** — every real filesystem with its physical disk model (LUKS/LVM resolved via lsblk), live read/write rates per physical disk, PSI I/O pressure
 - **NET** — total and per-interface download/upload rates, with download/upload sparklines; virtual interfaces (VPN tunnels, bridges, veth) are listed but kept out of the totals so VPN traffic isn't counted twice
 - **PROC** — top processes by CPU and by memory
-- **TEMP** — every hwmon sensor with friendly names (CPU, GPU, NVMe with drive model, RAM, Wi-Fi, …), plus fan speeds
+- **TEMP** — every hwmon sensor with friendly names (CPU, GPU, NVMe with drive model, RAM, Wi-Fi, …), plus fan speeds; each sensor row can carry its own alert threshold, set inline
 - **BAT** — per-battery charge, status, power draw, health, and time estimate (tab appears only when a system battery exists)
 - **BAR** — toggles and reorder arrows for which metrics the bar shows
 
@@ -85,6 +85,13 @@ fallback for the CPU/GPU thresholds. Load average turns urgent when the
 1-minute load reaches the thread count; battery turns urgent at ≤15% while
 discharging. Drive temperature is alert-only (it has no bar segment) and
 watches the hottest NVMe/SATA sensor.
+
+On top of those defaults, **any individual sensor** can carry its own
+alert threshold, set from the TEMP tab: the 󰂚 button on a sensor row opens
+a stepper (−/+/off). A sensor over its limit renders its row in the urgent
+color and fires a notification with the usual 3-tick hold and cooldown.
+These persist in shell.json as a `sensorThresholds` map keyed by
+`chip|device|label`, so they survive reboots and hwmon renumbering.
 
 ## Alerts
 

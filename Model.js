@@ -637,6 +637,55 @@ function isDesktopChassis(type) {
   return [3, 4, 5, 6, 7].indexOf(Number(type)) !== -1
 }
 
+// ---- Per-sensor thresholds -----------------------------------------------
+// Optional user-set alert thresholds for individual temperature sensors,
+// persisted as a { key: celsius } map in shell.json. Keyed by
+// chip|device|label — stable across reboots, unlike hwmon numbering.
+// Independent of (and in addition to) the CPU/GPU/drive defaults.
+
+function sensorKey(temp) {
+  return temp.chip + "|" + (temp.device || "") + "|" + (temp.label || "")
+}
+
+var SENSOR_THRESHOLD_MIN = 30
+var SENSOR_THRESHOLD_MAX = 120
+
+function normalizeSensorThresholds(value) {
+  var map = {}
+  if (value && typeof value === "object") {
+    for (var key in value) {
+      var n = Number(value[key])
+      if (isFinite(n) && n >= SENSOR_THRESHOLD_MIN && n <= SENSOR_THRESHOLD_MAX) map[key] = n
+    }
+  }
+  return map
+}
+
+// Returns a new map with `key` set to `celsius`, or removed when celsius
+// is not a finite number (the UI's "off").
+function setSensorThreshold(current, key, celsius) {
+  var map = normalizeSensorThresholds(current)
+  var n = Number(celsius)
+  if (isFinite(n)) {
+    map[key] = Math.max(SENSOR_THRESHOLD_MIN, Math.min(SENSOR_THRESHOLD_MAX, Math.round(n)))
+  } else {
+    delete map[key]
+  }
+  return map
+}
+
+function sensorThreshold(map, temp) {
+  var key = sensorKey(temp)
+  return map && key in map ? map[key] : NaN
+}
+
+// A sensible starting threshold when the user first enables one: a bit of
+// headroom above the current reading, on a 5° grid.
+function suggestedSensorThreshold(celsius) {
+  var base = isFinite(celsius) ? celsius + 10 : 70
+  return Math.max(SENSOR_THRESHOLD_MIN, Math.min(SENSOR_THRESHOLD_MAX, Math.ceil(base / 5) * 5))
+}
+
 // The discrete GPU when there is one: the card with the most VRAM.
 function primaryGpu(gpus) {
   var best = null
@@ -900,6 +949,13 @@ if (typeof module !== "undefined") {
     hottestDrive: hottestDrive,
     hasMotherboardSensors: hasMotherboardSensors,
     isDesktopChassis: isDesktopChassis,
+    sensorKey: sensorKey,
+    normalizeSensorThresholds: normalizeSensorThresholds,
+    setSensorThreshold: setSensorThreshold,
+    sensorThreshold: sensorThreshold,
+    suggestedSensorThreshold: suggestedSensorThreshold,
+    SENSOR_THRESHOLD_MIN: SENSOR_THRESHOLD_MIN,
+    SENSOR_THRESHOLD_MAX: SENSOR_THRESHOLD_MAX,
     cpuUsage: cpuUsage,
     netRates: netRates,
     ioRates: ioRates,

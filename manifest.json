@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.diegopluna.argus",
   "name": "Argus",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "author": "Diego Peter",
   "license": "MIT",
   "description": "CPU, RAM, GPU, disk, network, battery, and temperature stats in the bar, with sparkline history, top processes, urgent-threshold highlighting, and a full system panel.",

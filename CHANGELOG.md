@@ -4,6 +4,17 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] — 2026-08-19
+
+### Added
+- Per-sensor alert thresholds, set from the TEMP tab UI: each sensor row
+  has a 󰂚 button opening an inline −/+/off stepper. A sensor over its
+  limit renders urgent and fires a critical notification (same 3-tick
+  hold and 5-minute cooldown as the built-in alerts). Persisted in
+  shell.json as a `sensorThresholds` map keyed by `chip|device|label`,
+  stable across reboots and hwmon renumbering. Independent of — and in
+  addition to — the CPU/GPU/drive component thresholds.
+
 ## [0.5.0] — 2026-08-19
 
 ### Added

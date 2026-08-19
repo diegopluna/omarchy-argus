@@ -74,8 +74,18 @@ Panel {
     tab = tabs[index]
   }
 
-  onTabChanged: flick.contentY = 0
+  onTabChanged: {
+    flick.contentY = 0
+    editingSensor = ""
+  }
   onTabsChanged: if (tabs.indexOf(tab) === -1) tab = "CPU"
+
+  // Which TEMP-tab sensor row has its threshold editor expanded.
+  property string editingSensor: ""
+
+  function setSensorLimit(key, value) {
+    persistPluginSetting("sensorThresholds", Model.setSensorThreshold(setting("sensorThresholds", null), key, value))
+  }
 
   function persistPluginSetting(name, value) {
     if (!root.bar || !root.bar.shell || typeof root.bar.shell.updateEntryInline !== "function") return
@@ -714,11 +724,129 @@ Panel {
             Repeater {
               model: Service.temps
 
-              DetailRow {
+              Column {
+                id: sensorRow
                 required property var modelData
-                label: Model.tempName(modelData)
-                value: Model.fmtTemp(modelData.celsius)
+                readonly property string skey: Model.sensorKey(modelData)
+                readonly property real limit: Model.sensorThreshold(Service.sensorThresholds, modelData)
+                readonly property bool over: isFinite(limit) && modelData.celsius >= limit
+                readonly property bool editing: root.editingSensor === skey
+                width: parent.width
+                spacing: Style.space(4)
+
+                RowLayout {
+                  width: parent.width
+                  spacing: Style.space(8)
+
+                  Text {
+                    Layout.fillWidth: true
+                    text: Model.tempName(sensorRow.modelData)
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    elide: Text.ElideRight
+                  }
+
+                  Text {
+                    visible: isFinite(sensorRow.limit) && !sensorRow.editing
+                    text: "alert " + sensorRow.limit + "°"
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+
+                  Text {
+                    text: Model.fmtTemp(sensorRow.modelData.celsius)
+                    color: sensorRow.over ? root.urgent : root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                  }
+
+                  PanelActionButton {
+                    iconText: "\u{f009a}"
+                    tooltipText: isFinite(sensorRow.limit) ? "Edit alert threshold" : "Set alert threshold"
+                    foreground: isFinite(sensorRow.limit) ? Color.accent : root.dim
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.bodySmall
+                    size: Style.space(22)
+                    onClicked: {
+                      if (sensorRow.editing) {
+                        root.editingSensor = ""
+                      } else {
+                        if (!isFinite(sensorRow.limit)) {
+                          root.setSensorLimit(sensorRow.skey, Model.suggestedSensorThreshold(sensorRow.modelData.celsius))
+                        }
+                        root.editingSensor = sensorRow.skey
+                      }
+                    }
+                  }
+                }
+
+                RowLayout {
+                  visible: sensorRow.editing
+                  anchors.right: parent.right
+                  spacing: Style.space(6)
+
+                  Text {
+                    text: "Alert at"
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+
+                  PanelActionButton {
+                    iconText: "\u{f0374}"
+                    tooltipText: "-5°"
+                    enabled: sensorRow.limit > Model.SENSOR_THRESHOLD_MIN
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.bodySmall
+                    size: Style.space(22)
+                    onClicked: root.setSensorLimit(sensorRow.skey, sensorRow.limit - 5)
+                  }
+
+                  Text {
+                    text: sensorRow.limit + "°"
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                  }
+
+                  PanelActionButton {
+                    iconText: "\u{f0415}"
+                    tooltipText: "+5°"
+                    enabled: sensorRow.limit < Model.SENSOR_THRESHOLD_MAX
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.bodySmall
+                    size: Style.space(22)
+                    onClicked: root.setSensorLimit(sensorRow.skey, sensorRow.limit + 5)
+                  }
+
+                  PanelActionButton {
+                    iconText: "\u{f009b}"
+                    tooltipText: "Remove threshold"
+                    hoverColor: root.urgent
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.bodySmall
+                    size: Style.space(22)
+                    onClicked: {
+                      root.setSensorLimit(sensorRow.skey, NaN)
+                      root.editingSensor = ""
+                    }
+                  }
+                }
               }
+            }
+
+            Text {
+              width: parent.width
+              text: "\u{f009a} sets a per-sensor alert threshold — the row turns urgent and a notification fires when it stays above the limit."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
 
             PanelSectionHeader {

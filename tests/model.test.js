@@ -309,6 +309,22 @@ assert.strictEqual(Model.hasMotherboardSensors([], [{ chip: "it8620" }]), true)
 assert.ok(merged.kernel.length > 0, "kernel version parsed")
 assert.ok(merged.chassisType > 0, "chassis type parsed")
 
+// Per-sensor thresholds: stable keys, clamped values, off = removed.
+const sensor = { chip: "nvme", label: "Composite", celsius: 62, device: "ADATA FALCON" }
+const skey = Model.sensorKey(sensor)
+assert.strictEqual(skey, "nvme|ADATA FALCON|Composite")
+let sensorMap = Model.setSensorThreshold(null, skey, 70)
+assert.strictEqual(Model.sensorThreshold(sensorMap, sensor), 70)
+sensorMap = Model.setSensorThreshold(sensorMap, skey, 200)
+assert.strictEqual(sensorMap[skey], Model.SENSOR_THRESHOLD_MAX, "clamped to max")
+sensorMap = Model.setSensorThreshold(sensorMap, skey, NaN)
+assert.ok(!(skey in sensorMap), "NaN removes the threshold")
+assert.strictEqual(Model.sensorThreshold(sensorMap, sensor), NaN === NaN ? NaN : NaN)
+assert.ok(Number.isNaN(Model.sensorThreshold(sensorMap, sensor)))
+assert.deepStrictEqual(Model.normalizeSensorThresholds({ good: 75, low: 5, junk: "x" }), { good: 75 }, "invalid entries dropped")
+assert.strictEqual(Model.suggestedSensorThreshold(62), 75, "current+10 on a 5° grid")
+assert.strictEqual(Model.suggestedSensorThreshold(NaN), 70)
+
 // Sparkline history is fixed-length and NaN-safe.
 let hist = []
 for (let i = 0; i < Model.HISTORY_LEN + 10; i++) hist = Model.pushHistory(hist, i)

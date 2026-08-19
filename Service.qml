@@ -214,22 +214,37 @@ Singleton {
   property var _alertStreak: ({})
   property var _alertNotifiedAt: ({})
 
+  // Per-sensor thresholds the user set in the TEMP tab.
+  readonly property var sensorThresholds: Model.normalizeSensorThresholds(settings ? settings.sensorThresholds : null)
+
+  function _notify(streakKey, urgent, now, critical, message) {
+    var streak = urgent ? (_alertStreak[streakKey] || 0) + 1 : 0
+    _alertStreak[streakKey] = streak
+    if (streak !== alertHoldTicks) return
+    if (now - (_alertNotifiedAt[streakKey] || 0) < alertCooldownMs) return
+    _alertNotifiedAt[streakKey] = now
+    Quickshell.execDetached([
+      "notify-send", "-a", "Argus", "-u", critical ? "critical" : "normal",
+      "Argus", message
+    ])
+  }
+
   function checkAlerts(now) {
     if (!alertsEnabled) return
     var th = Model.thresholdsFrom(settings)
     var data = barData
     for (var i = 0; i < Model.ALERT_KEYS.length; i++) {
       var key = Model.ALERT_KEYS[i]
-      var streak = Model.metricUrgent(key, data, th) ? (_alertStreak[key] || 0) + 1 : 0
-      _alertStreak[key] = streak
-      if (streak !== alertHoldTicks) continue
-      if (now - (_alertNotifiedAt[key] || 0) < alertCooldownMs) continue
-      _alertNotifiedAt[key] = now
       var critical = key === "cputemp" || key === "gputemp" || key === "drivetemp" || key === "bat"
-      Quickshell.execDetached([
-        "notify-send", "-a", "Argus", "-u", critical ? "critical" : "normal",
-        "Argus", Model.alertText(key, data, th)
-      ])
+      _notify(key, Model.metricUrgent(key, data, th), now, critical, Model.alertText(key, data, th))
+    }
+    // User-set per-sensor thresholds, each with its own streak/cooldown.
+    for (var t = 0; t < temps.length; t++) {
+      var temp = temps[t]
+      var limit = Model.sensorThreshold(sensorThresholds, temp)
+      if (!isFinite(limit)) continue
+      _notify("sensor:" + Model.sensorKey(temp), temp.celsius >= limit, now, true,
+        Model.tempName(temp) + " at " + Model.fmtTemp(temp.celsius) + " (threshold " + limit + "°)")
     }
   }
 
