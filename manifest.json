@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.diegopluna.argus",
   "name": "Argus",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "author": "Diego Peter",
   "license": "MIT",
   "description": "CPU, RAM, GPU, disk, network, battery, and temperature stats in the bar, with a full system panel: 2m/1h sparkline history with alert markers, alerts that name the offending process, per-process GPU usage, drive SMART health, and an alert hook for automation.",

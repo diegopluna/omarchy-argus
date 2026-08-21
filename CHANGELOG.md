@@ -4,7 +4,16 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.8.1] — 2026-08-21
+
+### Security
+- Every Text rendering system-controlled strings (process command lines,
+  sensor and device names, drive models, alert log entries) is pinned to
+  `textFormat: Text.PlainText` — Qt's default AutoText can interpret
+  such strings as StyledText markup, and process argv is
+  attacker-influenceable. The kill-confirmation dialog's process name is
+  additionally stripped of markup-significant characters, since it flows
+  into a shell component the plugin cannot pin.
 
 ### Changed
 - Refreshed every screenshot and the Okomart `preview.png` to the 0.8.0

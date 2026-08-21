@@ -1084,6 +1084,7 @@ Panel {
 
                 PanelSectionHeader {
                   text: tempGroup.modelData.title
+                  textFormat: Text.PlainText
                   foreground: root.foreground
                   fontFamily: root.fontFamily
                 }
@@ -1110,6 +1111,7 @@ Panel {
                       Text {
                         Layout.fillWidth: true
                         text: Model.sensorRowLabel(sensorRow.modelData)
+                        textFormat: Text.PlainText
                         color: root.dim
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.body
@@ -1446,6 +1448,7 @@ Panel {
                 required property var modelData
                 width: parent.width
                 text: Qt.formatTime(new Date(modelData.at), "HH:mm") + " · " + modelData.text
+                textFormat: Text.PlainText
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -1615,6 +1618,7 @@ Panel {
 
     PanelSectionHeader {
       text: parent.title
+      textFormat: Text.PlainText
       foreground: root.foreground
       fontFamily: root.fontFamily
     }
@@ -1623,6 +1627,7 @@ Panel {
       visible: parent.name !== ""
       width: parent.width
       text: parent.name
+      textFormat: Text.PlainText
       color: root.foreground
       font.family: root.fontFamily
       font.pixelSize: Style.font.body
@@ -1642,6 +1647,7 @@ Panel {
     Text {
       Layout.fillWidth: true
       text: procRow.proc ? Model.procDisplay(procRow.proc.comm) + " · " + procRow.proc.pid : ""
+      textFormat: Text.PlainText
       color: root.dim
       font.family: root.fontFamily
       font.pixelSize: Style.font.body
@@ -1650,6 +1656,7 @@ Panel {
 
     Text {
       text: procRow.value
+      textFormat: Text.PlainText
       color: root.foreground
       font.family: root.fontFamily
       font.pixelSize: Style.font.body
@@ -1665,7 +1672,7 @@ Panel {
       size: Style.space(22)
       onClicked: root.pendingKill = {
         pid: procRow.proc.pid,
-        name: Model.procDisplay(procRow.proc.comm).split(" ")[0]
+        name: Model.procDisplay(procRow.proc.comm).split(" ")[0].replace(/[<>&]/g, "")
       }
     }
   }
@@ -1682,6 +1689,7 @@ Panel {
     Text {
       Layout.fillWidth: true
       text: parent.label
+      textFormat: Text.PlainText
       color: root.dim
       font.family: root.fontFamily
       font.pixelSize: Style.font.body
@@ -1690,6 +1698,7 @@ Panel {
 
     Text {
       text: parent.value
+      textFormat: Text.PlainText
       color: parent.urgent ? root.urgent : root.foreground
       font.family: root.fontFamily
       font.pixelSize: Style.font.body
@@ -1714,6 +1723,7 @@ Panel {
       Text {
         Layout.fillWidth: true
         text: meterRow.label
+        textFormat: Text.PlainText
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.body
@@ -1722,6 +1732,7 @@ Panel {
 
       Text {
         text: meterRow.value
+        textFormat: Text.PlainText
         color: root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.body
