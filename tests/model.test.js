@@ -352,6 +352,190 @@ assert.strictEqual(hist.length, Model.HISTORY_LEN)
 assert.strictEqual(hist[hist.length - 1], Model.HISTORY_LEN + 9)
 assert.strictEqual(Model.pushHistory([], NaN)[0], 0)
 
+// Bar segments pad values with no-break spaces so the bar keeps a stable
+// width as numbers change; unpadded callers (vertical bar) are untouched.
+const NBSP = "\u00A0"
+assert.strictEqual(Model.padValue("5%", 3), NBSP + "5%")
+assert.strictEqual(Model.padValue("100%", 3), "100%", "wide values never truncate")
+assert.strictEqual(Model.metricValue("cpu", { cpuPct: 5 }, true), NBSP + "5%")
+assert.strictEqual(Model.metricValue("cpu", { cpuPct: 5 }), "5%", "no pad by default")
+assert.strictEqual(Model.metricValue("io", { io: { read: 0, write: 1048576 } }, true),
+  "R" + NBSP + NBSP + NBSP + "0 W1.0M")
+assert.strictEqual(Model.metricValue("gputemp", { gpu: null }, true), "", "empty stays empty, not padded")
+const paddedSegs = Model.barSegments(["cpu"], { cpuPct: 5 }, null)
+assert.ok(paddedSegs[0].text.includes(NBSP + "5%"), "bar segments use padded values")
+assert.deepStrictEqual(Model.barLines(["cpu"], { cpuPct: 5 })[1].text, "5%", "vertical bar stays unpadded")
+
+// TEMP-tab grouping: sensors sharing a device collapse under one title.
+const grouped = Model.groupTemps([
+  { chip: "nvme", label: "Composite", celsius: 40, device: "KINGSTON SNV3S1000G" },
+  { chip: "nvme", label: "Sensor 1", celsius: 42, device: "KINGSTON SNV3S1000G" },
+  { chip: "nct6799", label: "SYSTIN", celsius: 36, device: "" },
+  { chip: "nct6799", label: "CPUTIN", celsius: 43, device: "" },
+  { chip: "mt7921_phy0", label: "", celsius: 50, device: "" }
+])
+assert.strictEqual(grouped.length, 3)
+assert.strictEqual(grouped[0].title, "NVMe · KINGSTON SNV3S1000G")
+assert.strictEqual(grouped[0].sensors.length, 2)
+assert.strictEqual(grouped[1].title, "Motherboard · nct6799")
+assert.strictEqual(grouped[2].title, "Wi-Fi · mt7921_phy0")
+assert.strictEqual(Model.sensorRowLabel(grouped[0].sensors[1]), "Sensor 1")
+assert.strictEqual(Model.sensorRowLabel(grouped[2].sensors[0]), "Temperature", "unnamed sensor gets a generic row label")
+assert.strictEqual(Model.tempName(grouped[2].sensors[0]), "Wi-Fi · mt7921_phy0", "tempName unchanged for fans")
+
+// Alert attribution: CPU-driven alerts name the top CPU process, memory
+// alerts the top memory process; rates and drive temps stay unattributed.
+const psCpuFix = Model.parsePs([" 4242 61.0  2.0 /usr/lib/chromium/chromium --type=renderer"])
+const psMemFix = Model.parsePs([" 1111  1.0 12.5 /usr/lib/zen/zen-bin -contentproc"])
+assert.strictEqual(Model.attributionFor("cpu", psCpuFix, psMemFix, 0), "chromium 61%")
+assert.strictEqual(Model.attributionFor("cputemp", psCpuFix, psMemFix, 0), "chromium 61%")
+assert.strictEqual(Model.attributionFor("ram", psCpuFix, psMemFix, 32 * 1073741824), "zen-bin 4.0 GB")
+assert.strictEqual(Model.attributionFor("cpu", [], [], 0), "", "empty list → no attribution")
+assert.strictEqual(Model.attributionFor("gputemp", psCpuFix, psMemFix, 0), "", "gpu temp unattributed")
+assert.ok(Model.attributableAlert("cpu") && Model.attributableAlert("ram"))
+assert.ok(!Model.attributableAlert("io") && !Model.attributableAlert("drivetemp"))
+
+// The one-shot ps sampler mode emits just the process sections.
+const psOnly = Model.parseSample(execSync("bash " + script + " ps").toString())
+assert.ok(psOnly.psCpu.length > 0 && psOnly.psMem.length > 0, "ps mode samples processes")
+assert.strictEqual(psOnly.host, "", "ps mode carries nothing else")
+assert.strictEqual(psOnly.cpus.length, 0)
+
+// Alert markers land on the sparkline slot for their timestamp; alerts
+// older than the window drop out, same-slot alerts collapse.
+const nowMs = 1000000
+assert.deepStrictEqual(Model.markerIndices([nowMs], nowMs, 2, 60), [0], "just fired → right edge")
+assert.deepStrictEqual(Model.markerIndices([nowMs - 20000], nowMs, 2, 60), [10])
+assert.deepStrictEqual(Model.markerIndices([nowMs - 300000], nowMs, 2, 60), [], "outside the window")
+assert.deepStrictEqual(Model.markerIndices([nowMs - 20000, nowMs - 20500], nowMs, 2, 60), [10], "deduped")
+assert.deepStrictEqual(Model.markerIndices([], nowMs, 2, 60), [])
+
+// Tiered history: the hour ring accumulates each slot's peak, closes slots
+// on the wall clock, and renders the live partial slot at the right edge.
+let hour = Model.emptyHourHist()
+const t0 = 5000000
+hour = Model.pushHourHist(hour, { cpu: 10, mem: 1, gpu: 0, netDown: 100, netUp: 0, ioRead: 0, ioWrite: 0 }, t0)
+hour = Model.pushHourHist(hour, { cpu: 80, mem: 2, gpu: 0, netDown: 50, netUp: 0, ioRead: 0, ioWrite: 0 }, t0 + 2000)
+hour = Model.pushHourHist(hour, { cpu: 20, mem: 3, gpu: 0, netDown: 70, netUp: 0, ioRead: 0, ioWrite: 0 }, t0 + 4000)
+assert.deepStrictEqual(hour.cpu.values, [], "slot still open")
+assert.deepStrictEqual(Model.hourValues(hour, "cpu"), [80], "partial slot shows the running peak")
+assert.deepStrictEqual(Model.hourValues(hour, "netDown"), [100])
+// 60s later the slot closes with its peak and a new one starts.
+hour = Model.pushHourHist(hour, { cpu: 30, mem: 4, gpu: 0, netDown: 10, netUp: 0, ioRead: 0, ioWrite: 0 }, t0 + 61000)
+assert.deepStrictEqual(hour.cpu.values, [80], "closed slot kept the peak")
+assert.ok(Number.isNaN(hour.cpu.acc), "next slot starts empty")
+hour = Model.pushHourHist(hour, { cpu: 5, mem: 4, gpu: NaN, netDown: 0, netUp: 0, ioRead: 0, ioWrite: 0 }, t0 + 63000)
+assert.deepStrictEqual(Model.hourValues(hour, "cpu"), [80, 5], "completed + partial")
+assert.deepStrictEqual(Model.hourValues(hour, "gpu"), [0, 0], "NaN series folds to 0")
+// The ring caps at HISTORY_LEN even with the partial slot appended.
+let hourCap = Model.emptyHourHist()
+for (let i = 0; i < Model.HISTORY_LEN + 5; i++) {
+  hourCap = Model.pushHourHist(hourCap, { cpu: i, mem: 0, gpu: 0, netDown: 0, netUp: 0, ioRead: 0, ioWrite: 0 }, t0 + i * 61000)
+}
+assert.strictEqual(Model.hourValues(hourCap, "cpu").length, Model.HISTORY_LEN)
+assert.deepStrictEqual(Model.hourValues(Model.emptyHourHist(), "cpu"), [], "empty ring renders empty")
+
+// Per-process GPU: fdinfo clients dedupe, aggregate per (pid, card), and
+// derive usage from cumulative engine-time deltas.
+const gpuProcSample = Model.parseSample(
+  "###GPUPDEV\n0|0000:0f:00.0\n1|0000:03:00.0\n###GPUPROC\n" +
+  "100|zen-bin|0000:03:00.0|7|1000000000|1024\n" +
+  "100|zen-bin|0000:03:00.0|9|2000000000|2048\n" +
+  "200|Hyprland|0000:0f:00.0|3|500000000|512")
+assert.deepStrictEqual(gpuProcSample.gpuPdev, { "0": "0000:0f:00.0", "1": "0000:03:00.0" })
+assert.strictEqual(gpuProcSample.gpuProcs.length, 3)
+const gpuPrev = gpuProcSample.gpuProcs
+const gpuCur = [
+  { pid: "100", comm: "zen-bin", pdev: "0000:03:00.0", client: "7", engineNs: 1000000000 + 6e8, vramKib: 1024 },
+  { pid: "100", comm: "zen-bin", pdev: "0000:03:00.0", client: "9", engineNs: 2000000000 + 4e8, vramKib: 2048 },
+  { pid: "200", comm: "Hyprland", pdev: "0000:0f:00.0", client: "3", engineNs: 500000000 + 1e8, vramKib: 512 }
+]
+const gpuRates = Model.gpuProcRates(gpuPrev, gpuCur, 2)
+assert.strictEqual(gpuRates.length, 2, "clients aggregate per pid+card")
+assert.strictEqual(gpuRates[0].comm, "zen-bin")
+assert.ok(Math.abs(gpuRates[0].pct - 50) < 0.01, "0.6s + 0.4s over 2s = 50%")
+assert.strictEqual(gpuRates[0].vramKib, 3072)
+assert.ok(Math.abs(gpuRates[1].pct - 5) < 0.01)
+assert.strictEqual(Model.gpuProcRates(null, gpuCur, 2)[0].pct, 0, "no prev → no rate, vram still present")
+// A restarted client (counter went backwards) contributes no rate.
+const restarted = [{ pid: "100", comm: "x", pdev: "a", client: "7", engineNs: 10, vramKib: 0 }]
+assert.strictEqual(Model.gpuProcRates(gpuPrev, restarted, 2)[0].pct, 0)
+// Parallel engines can sum past 100; the cap keeps the display honest.
+const hot = Model.gpuProcRates(
+  [{ pid: "1", comm: "x", pdev: "a", client: "1", engineNs: 0, vramKib: 0 },
+   { pid: "1", comm: "x", pdev: "a", client: "2", engineNs: 0, vramKib: 0 }],
+  [{ pid: "1", comm: "x", pdev: "a", client: "1", engineNs: 2e9, vramKib: 0 },
+   { pid: "1", comm: "x", pdev: "a", client: "2", engineNs: 2e9, vramKib: 0 }], 2)
+assert.strictEqual(hot[0].pct, 100)
+
+// Drive health from udisks2: NVMe with attributes, SATA with the failing
+// flag, and the bad-drive predicate.
+const health = Model.parseDriveHealth([
+  "nvme2n1|nvme|ADATA FALCON|3565||9|0|0|0|195",
+  "nvme1n1|nvme|WDC WDS480G2G0C-00AJM0|15257|spare-low|91|120|0|3|149",
+  "sda|ata|WD Blue|20000|failing"
+])
+assert.strictEqual(health.length, 3)
+assert.strictEqual(health[0].wearPct, 9)
+assert.strictEqual(health[0].unsafeShutdowns, 195)
+assert.strictEqual(Model.driveHealthBad(health[0]), false, "worn 9% is fine")
+assert.strictEqual(Model.driveHealthBad(health[1]), true, "critical warning + worn 91%")
+assert.strictEqual(Model.driveHealthBad(health[2]), true, "SATA failing flag")
+assert.strictEqual(Model.fmtDriveHealth(health[0]), "worn 9% · on 148d 13h · healthy")
+assert.ok(Model.fmtDriveHealth(health[1]).includes("spare-low"))
+assert.ok(Model.fmtDriveHealth(health[2]).includes("failing"))
+const mediaErr = Model.parseDriveHealth(["nvme0n1|nvme|X|10||5|0|0|2|0"])[0]
+assert.strictEqual(Model.driveHealthBad(mediaErr), true, "media errors are bad")
+assert.ok(Model.fmtDriveHealth(mediaErr).includes("2 media errors"))
+// The live health mode parses (may be empty where udisks2 is absent — CI).
+const liveHealth = Model.parseSample(execSync("bash " + script + " health").toString())
+assert.ok(Array.isArray(liveHealth.driveHealth))
+if (!CI) assert.ok(liveHealth.driveHealth.length > 0, "live drives found via udisks2")
+// The panel sample carries GPU clients on machines with fdinfo drivers.
+const livePanel = Model.parseSample(execSync("bash " + script + " dynamic panel").toString())
+assert.ok(Array.isArray(livePanel.gpuProcs))
+if (!CI) assert.ok(livePanel.gpuProcs.length > 0, "live DRM clients found")
+
+// ---- Fixture corpus -------------------------------------------------------
+// Every file in tests/fixtures/ is a scrubbed `sample.sh` capture from a
+// real machine (see tests/make-fixture.sh). Each one must parse cleanly
+// and survive every derived-value path — a contributed fixture makes that
+// hardware's layout a permanent regression test.
+const fs = require("fs")
+const fixturesDir = path.join(__dirname, "fixtures")
+const fixtures = fs.readdirSync(fixturesDir).filter(f => f.endsWith(".txt"))
+assert.ok(fixtures.length > 0, "fixture corpus present")
+for (const name of fixtures) {
+  const fx = Model.parseSample(fs.readFileSync(path.join(fixturesDir, name), "utf8"))
+  const tag = "fixture " + name + ": "
+  assert.ok(fx.cpus.length > 1, tag + "cpu lines")
+  assert.ok(fx.mem.total > 0, tag + "memory")
+  assert.ok(fx.disks.every(d => d.size > 0), tag + "disk sizes")
+  assert.ok(fx.temps.every(t => t.celsius > -41 && t.celsius < 251), tag + "plausible temps")
+  assert.ok(fx.gpus.every(g => g.card !== "" && g.label !== ""), tag + "gpu identity")
+  // Every derived path the panel renders must hold up on this hardware.
+  Model.groupTemps(fx.temps).forEach(g => assert.ok(g.title.length > 0, tag + "group titles"))
+  fx.temps.forEach(t => assert.ok(Model.tempName(t).length > 0, tag + "sensor names"))
+  fx.fans.forEach(f => assert.ok(Model.tempName(f).length > 0, tag + "fan names"))
+  Model.cpuUsage(null, fx.cpus)
+  Model.netRates(null, fx.net, 1, fx.netPhys)
+  Model.ioRates(null, fx.io, 1, fx.diskModels, fx.diskLinks)
+  const fbd = {
+    cpuPct: 1, cpuTemp: Model.cpuTemp(fx.temps), memPct: 1,
+    gpu: Model.primaryGpu(fx.gpus), disk: Model.diskFor(fx.disks, "/"),
+    io: { read: 0, write: 0 }, netDown: 0, netUp: 0,
+    load1: fx.load.load1, cores: fx.cpus.length - 1,
+    battery: Model.batterySummary(fx.batteries),
+    driveTemp: Model.hottestDrive(fx.temps)
+  }
+  const allKeys = Model.METRICS.map(m => m.key)
+  assert.ok(Model.barText(allKeys, fbd).length > 0, tag + "bar renders")
+  Model.barLines(allKeys, fbd, null)
+  Model.ALERT_KEYS.forEach(k => assert.ok(Model.alertText(k, fbd, null).length > 0, tag + "alert texts"))
+  fx.driveHealth.forEach(d => assert.ok(Model.fmtDriveHealth(d).length > 0, tag + "drive health"))
+}
+console.log("fixtures:", fixtures.join(" "))
+
 console.log("bar text:", barText)
 console.log("cpu temp:", Model.fmtTemp(barData.cpuTemp), "gpus:", sample.gpus.length,
   "disks:", sample.disks.map(d => d.mount).join(" "),

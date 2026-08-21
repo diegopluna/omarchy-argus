@@ -31,6 +31,7 @@ Singleton {
   function panelOpened() {
     _panelRefs++
     refresh()
+    if (!healthProc.running) healthProc.running = true
   }
 
   function panelClosed() {
@@ -85,6 +86,19 @@ Singleton {
   property var battery: null
   property bool ready: false
 
+  // Per-process GPU usage (panel-only samples, like the process lists).
+  // Engine counters are cumulative, so rates use the wall clock between
+  // the two GPU snapshots — panel-closed gaps would otherwise inflate the
+  // first reopened tick.
+  property var gpuPdev: ({})
+  property var gpuProcs: []
+  property var _prevGpuProc: null
+  property double _prevGpuProcAt: 0
+
+  // Drive SMART health via udisks2; sampled at startup and panel open.
+  property var driveHealth: []
+  property var _healthNotified: ({})
+
   // Rolling per-tick history for the panel sparklines (Model.HISTORY_LEN
   // points, oldest first). Populated only from valid delta ticks.
   property var cpuHist: []
@@ -95,10 +109,19 @@ Singleton {
   property var ioReadHist: []
   property var ioWriteHist: []
 
-  // The last few fired alerts, newest first: { at: epoch ms, text }.
+  // Hour-scale rings behind the fine ones: one peak per minute, all
+  // series in one object (see Model.pushHourHist).
+  property var hourHist: Model.emptyHourHist()
+
+  // The last few fired alerts, newest first: { at: epoch ms, key, text }.
   // Notifications vanish; this answers "did anything trip while I was
-  // away?" from the panel.
+  // away?" from the panel. `key` lets the sparklines mark when an alert
+  // fired on their series.
   property var alertLog: []
+
+  // Wall-clock time of the newest applied sample — the right edge of every
+  // sparkline, used to place alert markers.
+  property double lastTickAt: 0
 
   // Highest values observed since the shell started.
   property real peakCpuTemp: NaN
@@ -113,12 +136,22 @@ Singleton {
 
   readonly property string scriptPath: Qt.resolvedUrl("sample.sh").toString().replace(/^file:\/\//, "")
 
+  // Argus's own cost, measured rather than promised: wall clock from
+  // launching sample.sh to the parsed values being applied. Shown in the
+  // BAR tab so the monitor's overhead is never a matter of trust.
+  property double _sampleStartedAt: 0
+  property double lastSampleMs: 0
+  property double avgSampleMs: 0
+
   function refresh() {
     if (_staticText === "") {
       if (!staticProc.running) staticProc.running = true
       return
     }
-    if (!proc.running) proc.running = true
+    if (!proc.running) {
+      _sampleStartedAt = Date.now()
+      proc.running = true
+    }
   }
 
   function apply(text) {
@@ -126,6 +159,11 @@ Singleton {
     var parsed = Model.parseSample(_staticText + "\n" + text)
     if (parsed.cpus.length === 0) return
     var hadPrev = _prevCpus !== null
+
+    if (_sampleStartedAt > 0) {
+      lastSampleMs = now - _sampleStartedAt
+      avgSampleMs = avgSampleMs > 0 ? avgSampleMs * 0.9 + lastSampleMs * 0.1 : lastSampleMs
+    }
 
     var usage = Model.cpuUsage(_prevCpus, parsed.cpus)
     var cores = []
@@ -168,6 +206,13 @@ Singleton {
     // the panel is closed instead of blanking the PROC tab.
     if (parsed.psCpu.length > 0) psCpu = parsed.psCpu
     if (parsed.psMem.length > 0) psMem = parsed.psMem
+    gpuPdev = parsed.gpuPdev
+    if (parsed.gpuProcs.length > 0) {
+      var gpuElapsed = _prevGpuProcAt > 0 ? (now - _prevGpuProcAt) / 1000 : 0
+      gpuProcs = Model.gpuProcRates(_prevGpuProc, parsed.gpuProcs, gpuElapsed)
+      _prevGpuProc = parsed.gpuProcs
+      _prevGpuProcAt = now
+    }
     batteries = parsed.batteries
     battery = Model.batterySummary(parsed.batteries)
     nvidiaSuspended = parsed.nvidiaSuspended
@@ -194,6 +239,10 @@ Singleton {
       netUpHist = Model.pushHistory(netUpHist, netUp)
       ioReadHist = Model.pushHistory(ioReadHist, ioRead)
       ioWriteHist = Model.pushHistory(ioWriteHist, ioWrite)
+      hourHist = Model.pushHourHist(hourHist, {
+        cpu: cpuPct, mem: memPct, gpu: primaryGpu ? primaryGpu.busy : 0,
+        netDown: netDown, netUp: netUp, ioRead: ioRead, ioWrite: ioWrite
+      }, now)
       if (netDown > peakNetDown) peakNetDown = netDown
       if (netUp > peakNetUp) peakNetUp = netUp
       if (ioRead > peakIoRead) peakIoRead = ioRead
@@ -206,6 +255,7 @@ Singleton {
     _prevNet = parsed.net
     _prevIo = parsed.io
     _prevTime = now
+    lastTickAt = now
     sample = parsed
     ready = _prevCpus !== null && corePcts.length > 0
 
@@ -226,35 +276,99 @@ Singleton {
   // Per-sensor thresholds the user set in the TEMP tab.
   readonly property var sensorThresholds: Model.normalizeSensorThresholds(settings ? settings.sensorThresholds : null)
 
-  function _notify(streakKey, urgent, now, critical, message) {
+  // Whether this key's streak just crossed the hold threshold and is out
+  // of cooldown — the moment an alert fires.
+  function _fired(streakKey, urgent, now) {
     var streak = urgent ? (_alertStreak[streakKey] || 0) + 1 : 0
     _alertStreak[streakKey] = streak
-    if (streak !== alertHoldTicks) return
-    if (now - (_alertNotifiedAt[streakKey] || 0) < alertCooldownMs) return
+    if (streak !== alertHoldTicks) return false
+    if (now - (_alertNotifiedAt[streakKey] || 0) < alertCooldownMs) return false
     _alertNotifiedAt[streakKey] = now
-    alertLog = [{ at: now, text: message }].concat(alertLog).slice(0, 10)
-    Quickshell.execDetached([
-      "notify-send", "-a", "Argus", "-u", critical ? "critical" : "normal",
-      "Argus", message
-    ])
+    return true
   }
 
   function checkAlerts(now) {
     if (!alertsEnabled) return
     var th = Model.thresholdsFrom(settings)
     var data = barData
+    var pending = []
     for (var i = 0; i < Model.ALERT_KEYS.length; i++) {
       var key = Model.ALERT_KEYS[i]
+      if (!_fired(key, Model.metricUrgent(key, data, th), now)) continue
       var critical = key === "cputemp" || key === "gputemp" || key === "drivetemp" || key === "bat"
-      _notify(key, Model.metricUrgent(key, data, th), now, critical, Model.alertText(key, data, th))
+      pending.push({ at: now, key: key, critical: critical, text: Model.alertText(key, data, th) })
     }
     // User-set per-sensor thresholds, each with its own streak/cooldown.
     for (var t = 0; t < temps.length; t++) {
       var temp = temps[t]
       var limit = Model.sensorThreshold(sensorThresholds, temp)
       if (!isFinite(limit)) continue
-      _notify("sensor:" + Model.sensorKey(temp), temp.celsius >= limit, now, true,
-        Model.tempName(temp) + " at " + Model.fmtTemp(temp.celsius) + " (threshold " + limit + "°)")
+      if (!_fired("sensor:" + Model.sensorKey(temp), temp.celsius >= limit, now)) continue
+      pending.push({ at: now, key: "sensor:" + Model.sensorKey(temp), critical: true,
+        text: Model.tempName(temp) + " at " + Model.fmtTemp(temp.celsius) + " (threshold " + limit + "°)" })
+    }
+    _dispatchAlerts(pending)
+  }
+
+  // ---- Alert attribution ----------------------------------------------
+  // CPU and memory alerts name their likely culprit ("— chromium 61%").
+  // The panel-open tick already carries fresh process lists; otherwise a
+  // one-shot `sample.sh ps` fetches them, and a short timeout emits the
+  // alert unattributed rather than never.
+  property var _pendingAlerts: []
+
+  function _dispatchAlerts(pending) {
+    if (pending.length === 0) return
+    var needsPs = false
+    for (var i = 0; i < pending.length; i++) {
+      if (Model.attributableAlert(pending[i].key)) needsPs = true
+    }
+    if (!needsPs || panelActive) {
+      _emitAlerts(pending, psCpu, psMem)
+      return
+    }
+    _pendingAlerts = _pendingAlerts.concat(pending)
+    if (!psProc.running) psProc.running = true
+    psTimeout.restart()
+  }
+
+  function _flushPendingAlerts(cpuList, memList) {
+    var pending = _pendingAlerts
+    _pendingAlerts = []
+    _emitAlerts(pending, cpuList, memList)
+  }
+
+  function _emitAlerts(pending, cpuList, memList) {
+    for (var i = 0; i < pending.length; i++) {
+      var a = pending[i]
+      var attribution = Model.attributionFor(a.key, cpuList, memList, memTotal)
+      _deliverAlert(a.at, a.key, a.critical, a.text + (attribution !== "" ? " — " + attribution : ""))
+    }
+  }
+
+  // The user's alert hook: a shell command run on every fired alert, with
+  // the alert's details in ARGUS_ALERT_* environment variables. One
+  // setting turns alerts into automation (log to a file, push to a
+  // phone, page a webhook).
+  readonly property string alertCommand: settings && typeof settings.alertCommand === "string"
+    ? settings.alertCommand : ""
+
+  // Every fired alert flows through here: log entry, notification, hook.
+  function _deliverAlert(at, key, critical, text) {
+    alertLog = [{ at: at, key: key, text: text }].concat(alertLog).slice(0, 10)
+    Quickshell.execDetached([
+      "notify-send", "-a", "Argus", "-u", critical ? "critical" : "normal",
+      "Argus", text
+    ])
+    if (alertCommand !== "") {
+      Quickshell.execDetached([
+        "env",
+        "ARGUS_ALERT_KEY=" + key,
+        "ARGUS_ALERT_TEXT=" + text,
+        "ARGUS_ALERT_CRITICAL=" + (critical ? "1" : "0"),
+        "ARGUS_ALERT_AT=" + String(at),
+        "sh", "-c", alertCommand
+      ])
     }
   }
 
@@ -290,6 +404,32 @@ Singleton {
       onStreamFinished: {
         root._staticText = text
         root.refresh()
+        // First drive-health sample once identity is in; a failing drive
+        // should be surfaced without waiting for a panel open.
+        if (!healthProc.running) healthProc.running = true
+      }
+    }
+  }
+
+  // Drive SMART health via udisks2 (sample.sh health). Wear moves in
+  // weeks, so this runs at startup and panel open, not per tick. A drive
+  // that turns bad notifies once per shell session.
+  Process {
+    id: healthProc
+    command: ["bash", root.scriptPath, "health"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var parsed = Model.parseSample(text)
+        root.driveHealth = parsed.driveHealth
+        for (var i = 0; i < parsed.driveHealth.length; i++) {
+          var d = parsed.driveHealth[i]
+          if (!Model.driveHealthBad(d) || root._healthNotified[d.dev]) continue
+          root._healthNotified[d.dev] = true
+          var message = "Drive health: " + (d.model !== "" ? d.model + " (" + d.dev + ")" : d.dev)
+            + " — " + Model.fmtDriveHealth(d)
+          root._deliverAlert(Date.now(), "drivehealth", true, message)
+        }
       }
     }
   }
@@ -303,5 +443,30 @@ Singleton {
       waitForEnd: true
       onStreamFinished: root.apply(text)
     }
+  }
+
+  // One-shot top-process sample for alert attribution while no panel is
+  // open. The snapshot also refreshes the PROC tab's kept-last lists.
+  Process {
+    id: psProc
+    command: ["bash", root.scriptPath, "ps"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        psTimeout.stop()
+        var parsed = Model.parseSample(text)
+        if (parsed.psCpu.length > 0) root.psCpu = parsed.psCpu
+        if (parsed.psMem.length > 0) root.psMem = parsed.psMem
+        root._flushPendingAlerts(parsed.psCpu, parsed.psMem)
+      }
+    }
+  }
+
+  // If the attribution sample hangs, emit the alerts unattributed rather
+  // than never.
+  Timer {
+    id: psTimeout
+    interval: 2000
+    onTriggered: root._flushPendingAlerts([], [])
   }
 }

@@ -4,6 +4,84 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] — 2026-08-21
+
+### Changed
+- The sampler's CPU cost dropped ~8× (≈81ms → ≈10ms per tick): the
+  per-value `cat` calls in the sensor/GPU/battery loops — a fork each,
+  ~95% of the sampler's CPU — became zero-fork bash builtin reads, and
+  the per-chip `sed` trims became parameter expansion. Output is
+  byte-for-byte structurally identical. Most remaining wall time is the
+  hwmon sensor bus itself (Super I/O chips take milliseconds per reading
+  in the kernel), which no sampler can skip.
+- The panel hero now carries the eye of Argus (blinking, same as the
+  bar placeholder) instead of a generic CPU glyph, and its meta line
+  keeps only the 1-minute load — the full triple lives in the CPU tab.
+- TEMP tab groups sensors by physical device — one header per device,
+  just the sensor label per row — instead of repeating "Motherboard ·
+  nct6799 · …" on every line. A group whose sensors are all hidden hides
+  its header too.
+- Bar segment values are no-break-space padded to a stable width, so
+  "9%" → "10%" no longer shifts every neighboring bar widget.
+- Sparklines draw a solid baseline and idle samples render nothing —
+  no more dashed row of minimum-height stubs when a series is quiet;
+  the per-thread grid likewise leaves idle cells empty.
+- Rate sparklines (NET, DISK I/O) scale to the session peak and mark it
+  with a faint ceiling line, so the y-axis stays put instead of
+  rescaling every time a spike scrolls out of the window.
+- BAR tab rows are flat (label + switch) instead of bordered cards, with
+  a fixed icon column; network and battery — whose bar segments compose
+  their own glyphs — get static list icons so no row is iconless.
+- Tab labels underline their first letter, advertising the letter-jump
+  hotkey; NET rows use the same "·" separator style as DISK.
+
+### Added
+- The watch row: a quiet strip of vitals (CPU, RAM, CPU/GPU temperature,
+  disk, battery) under the host name, visible on every tab — Argus never
+  goes blind to the rest of the system while you read one tab. A vital
+  turns urgent with its metric, the current tab's vital reads in the
+  foreground color, and clicking one jumps to the tab that explains it.
+- Alert hook: an `alertCommand` setting runs a shell command on every
+  fired alert with `ARGUS_ALERT_KEY`/`TEXT`/`CRITICAL`/`AT` in the
+  environment — one setting turns alerts into automation (ntfy, logs,
+  webhooks). Drive-health alerts flow through the same path.
+- Self-accounting: the BAR tab shows what sampling actually costs (wall
+  clock per tick, measured), also exposed as `samplerMs` in the
+  `metrics` IPC snapshot.
+- Fixture corpus: `tests/fixtures/` holds scrubbed `sample.sh` captures
+  from real machines, each fully re-parsed and rendered through every
+  derived-value path on every CI run. `tests/make-fixture.sh` generates
+  a contributable (hostname- and process-scrubbed) capture; seeded with
+  this Ryzen 9700X + Radeon 9070 box.
+- Per-process GPU usage: each GPU's panel section lists its busiest
+  processes with usage percent and VRAM, from DRM fdinfo usage stats
+  (amdgpu, i915/xe, nouveau — one ~15ms gawk pass, panel-only; the
+  proprietary NVIDIA driver exposes no fdinfo stats and lists nothing).
+- Drive health: the DISK tab shows each drive's wear, power-on time, and
+  status from SMART via udisks2's D-Bus API — the one SMART source that
+  needs no root. A drive reporting a critical warning, ≥90% wear, or
+  media errors renders urgent and fires one notification per session.
+  Sampled at startup and panel open; also in the `metrics` IPC snapshot
+  (`driveHealth`).
+- Tiered history: behind every sparkline's ~2-minute per-tick ring sits a
+  1-hour ring keeping each minute's peak (peaks, not averages — zooming
+  out must not erase the spike you're looking for). Click any chart
+  caption to flip every chart between the two spans; alert markers move
+  with the span, and `span 2m|1h` does the same over IPC.
+- Alert attribution: CPU and memory alerts name their likely culprit —
+  "CPU usage at 100% (threshold 90%) — chromium 61%". While no panel is
+  open, a one-shot `sample.sh ps` fetches the process snapshot at the
+  moment the alert fires (with a 2s timeout falling back to an
+  unattributed alert).
+- Alert markers: the CPU, MEM, and GPU sparklines cap the bar where an
+  alert fired with a foreground-colored tick, so the alert log and the
+  history tell one story.
+- The `metrics` IPC snapshot now includes the alert log (`alerts`).
+- A thin scroll indicator on the panel, so long tabs signal the content
+  below the fold.
+- The hero's refresh glyph spins on every refresh (button, `r`, middle
+  click) — refreshing previously gave no visible acknowledgment.
+
 ## [0.7.1] — 2026-08-19
 
 ### Changed

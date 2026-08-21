@@ -19,13 +19,21 @@ order in the panel's **BAR** tab; the choice persists to
 
 - **CPU** — processor model, overall usage with sparkline history, per-thread bars, frequency, temperature with session peak, load, uptime, stall pressure, kernel version
 - **MEM** — RAM usage with sparkline history, swap, PSI memory pressure
-- **GPU** — every GPU (AMD via amdgpu sysfs, NVIDIA via nvidia-smi, Intel via hwmon): name, usage with sparkline history, VRAM, temperature with session peak, power draw
-- **DISK** — every real filesystem with its physical disk model (LUKS/LVM resolved via lsblk), live read/write rates per physical disk, PSI I/O pressure
+- **GPU** — every GPU (AMD via amdgpu sysfs, NVIDIA via nvidia-smi, Intel via hwmon): name, usage with sparkline history, VRAM, temperature with session peak, power draw, and each card's busiest processes with GPU usage and VRAM (via DRM fdinfo; not available for the proprietary NVIDIA driver)
+- **DISK** — every real filesystem with its physical disk model (LUKS/LVM resolved via lsblk), live read/write rates per physical disk, PSI I/O pressure, and per-drive SMART health (wear, power-on time, warnings) via udisks2 — a failing or worn-out drive turns urgent and notifies once per session
 - **NET** — total and per-interface download/upload rates, with download/upload sparklines; virtual interfaces (VPN tunnels, bridges, veth) are listed but kept out of the totals so VPN traffic isn't counted twice
 - **PROC** — top processes by CPU and by memory (full command lines), each with a terminate button (SIGTERM, after confirmation)
-- **TEMP** — every hwmon sensor with friendly names (CPU, GPU, NVMe with drive model, RAM, Wi-Fi, …), plus fan speeds; each sensor row can carry its own alert threshold, set inline, and noisy sensors can be hidden (hidden sensors keep alerting)
+- **TEMP** — every hwmon sensor, grouped by device with friendly names (CPU, GPU, NVMe with drive model, RAM, Wi-Fi, …), plus fan speeds; each sensor row can carry its own alert threshold, set inline, and noisy sensors can be hidden (hidden sensors keep alerting)
 - **BAT** — per-battery charge, status, power draw, health, and time estimate (tab appears only when a system battery exists)
-- **BAR** — toggles and reorder arrows for which metrics the bar shows, plus the last few fired alerts with timestamps
+- **BAR** — toggles and reorder arrows for which metrics the bar shows, plus the last few fired alerts with timestamps; CPU and memory alerts name the process that likely caused them, and the CPU/MEM/GPU sparklines mark where in the history an alert fired
+
+A watch row under the host name keeps every vital — CPU, RAM, CPU/GPU
+temperature, disk, battery — visible on every tab. A vital turns urgent
+with its metric, and clicking one jumps to the tab that explains it.
+
+Sparklines cover the last ~2 minutes at full resolution; click any chart
+caption to switch every chart to a 1-hour view where each bar is that
+minute's peak — peaks, not averages, so spikes survive the zoom-out.
 
 PSI "stall pressure" (`/proc/pressure`, shown over the 10s/1m/5m windows
 like a load average) is the share of time tasks spent *waiting* on a
@@ -85,6 +93,7 @@ Inline settings on the widget's entry in `shell.json`:
 | `urgentDriveTempC` | `70` | Drive (NVMe/SATA) temperature (°C) alert threshold |
 | `urgentDiskPct` | `90` | Disk usage % at which the bar segment turns urgent |
 | `alerts` | `"On"` | Desktop notification when a metric stays past its threshold |
+| `alertCommand` | — | Shell command run on every fired alert (see below) |
 
 Temperature thresholds are per component — GPUs run hot by design, SSDs
 throttle early. The pre-0.5.0 single `urgentTempC` still works as a
@@ -99,6 +108,28 @@ a stepper (−/+/off). A sensor over its limit renders its row in the urgent
 color and fires a notification with the usual 3-tick hold and cooldown.
 These persist in shell.json as a `sensorThresholds` map keyed by
 `chip|device|label`, so they survive reboots and hwmon renumbering.
+
+### Alert hook
+
+`alertCommand` runs on every fired alert (in addition to the desktop
+notification), with the alert's details in environment variables:
+`ARGUS_ALERT_KEY` (metric key, `sensor:…`, or `drivehealth`),
+`ARGUS_ALERT_TEXT` (the full message, attribution included),
+`ARGUS_ALERT_CRITICAL` (`1`/`0`), and `ARGUS_ALERT_AT` (epoch ms). One
+setting turns alerts into automation — log them, push them to a phone,
+page a webhook:
+
+```json
+"alertCommand": "curl -s -d \"$ARGUS_ALERT_TEXT\" https://ntfy.sh/my-box"
+```
+
+### Argus's own cost
+
+The BAR tab shows what sampling actually costs (wall clock per tick,
+measured, not promised). The shell never blocks on it, and most of the
+wall time is the hwmon sensor bus itself — Super I/O chips take
+milliseconds per reading in the kernel — while the sampler's own CPU
+cost is ~10ms per tick (values are read with zero-fork bash builtins).
 
 ## Alerts
 
@@ -132,6 +163,7 @@ echo nct6775 | sudo tee /etc/modules-load.d/nct6775.conf
 omarchy-shell io.github.diegopluna.argus toggle
 omarchy-shell io.github.diegopluna.argus refresh
 omarchy-shell io.github.diegopluna.argus tab TEMP
+omarchy-shell io.github.diegopluna.argus span 1h   # sparkline span: 2m|1h
 omarchy-shell io.github.diegopluna.argus metrics   # current snapshot as JSON, for scripts
 ```
 
@@ -141,7 +173,9 @@ omarchy-shell io.github.diegopluna.argus metrics   # current snapshot as JSON, f
 `lsblk`, `ps`, `/sys/class/hwmon` for temperatures and fans,
 `/sys/class/power_supply` for batteries (peripheral batteries such as mice
 are filtered out via the sysfs `scope` attribute), and
-`/sys/class/drm/card*/device` for AMD GPU busy/VRAM (amdgpu). NVIDIA GPUs
+`/sys/class/drm/card*/device` for AMD GPU busy/VRAM (amdgpu),
+`/proc/*/fdinfo` DRM usage stats for per-process GPU usage, and udisks2
+over D-Bus for drive SMART health. NVIDIA GPUs
 are read through `nvidia-smi --query-gpu=... --format=csv,noheader,nounits`
 and Intel GPUs (i915/xe) through their hwmon temperature/power — Intel
 exposes no unprivileged busy counter, so usage is honestly marked
@@ -153,6 +187,22 @@ GPUs) degrade gracefully. While every NVIDIA card is runtime-suspended
 polling never keeps an Optimus dGPU awake, and shows the card as asleep.
 Hybrid AMD iGPU + NVIDIA dGPU systems list both, with the bar's GPU metrics
 following the card with the most VRAM.
+
+## Contributing a hardware fixture
+
+Argus aims to parse every machine's hwmon/GPU/battery layout correctly,
+and the test suite proves it against a corpus of real samples in
+`tests/fixtures/` — every fixture is re-parsed on every CI run. If Argus
+misreads (or you just own) hardware the corpus lacks:
+
+```bash
+bash tests/make-fixture.sh > tests/fixtures/<cpu>-<gpu>.txt
+```
+
+The script scrubs your hostname and process lists; review the output,
+then open a PR. One file makes your hardware a permanent regression test.
+
+## Sampling
 
 One short bash sampler runs per refresh — shared by every bar surface, so
 multi-monitor setups still sample once. Hardware identity that cannot

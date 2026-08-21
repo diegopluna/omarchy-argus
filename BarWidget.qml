@@ -27,6 +27,8 @@ Panel {
   readonly property var shownKeys: Model.normalizeShow(setting("show", Model.DEFAULT_SHOW))
   readonly property var thresholds: Model.thresholdsFrom(settings)
   readonly property var barSegs: Service.ready ? Model.barSegments(shownKeys, Service.barData, thresholds) : []
+  // The panel's always-visible vitals, independent of the bar selection.
+  readonly property var vitalSegs: Service.ready ? Model.barSegments(Model.VITAL_KEYS, Service.barData, thresholds) : []
   // The placeholder icon also covers the not-yet-sampled window right after
   // the shell starts, so the widget is clickable from the first frame.
   readonly property bool placeholderOnly: barSegs.length === 0
@@ -96,8 +98,34 @@ Panel {
   // Process pending a kill confirmation: { pid, name } or null.
   property var pendingKill: null
 
-  // How much wall clock one full sparkline spans.
-  readonly property string histSpan: "last " + Model.fmtUptime(Model.HISTORY_LEN * Service.intervalSec)
+  // Which span the sparklines show: the per-tick fine ring (~2m) or the
+  // hour ring of per-minute peaks. Toggled by clicking any chart caption.
+  property bool histHour: false
+
+  // Bumped on every user-triggered refresh so the hero's refresh glyph can
+  // spin in acknowledgment — without it, r / middle click do nothing visible.
+  property int refreshPulse: 0
+
+  function refreshNow() {
+    Service.refresh()
+    refreshPulse++
+  }
+
+  // Sparkline slots (counted back from the right edge) where an alert on
+  // one of `keys` fired within the visible window.
+  function alertMarkers(keys) {
+    var times = []
+    for (var i = 0; i < Service.alertLog.length; i++) {
+      if (keys.indexOf(Service.alertLog[i].key) !== -1) times.push(Service.alertLog[i].at)
+    }
+    var slotSec = histHour ? Model.HOUR_SLOT_SEC : Service.intervalSec
+    return Model.markerIndices(times, Service.lastTickAt, slotSec, Model.HISTORY_LEN)
+  }
+
+  // The series a chart renders at the current span.
+  function histFor(fine, key) {
+    return histHour ? Model.hourValues(Service.hourHist, key) : fine
+  }
 
   function setSensorLimit(key, value) {
     persistPluginSetting("sensorThresholds", Model.setSensorThreshold(setting("sensorThresholds", null), key, value))
@@ -139,7 +167,7 @@ Panel {
       return
     }
     if (text === "r" || text === "R") {
-      Service.refresh()
+      root.refreshNow()
       return
     }
     var digit = parseInt(text, 10)
@@ -248,13 +276,22 @@ Panel {
           return { label: g.label, name: g.name, busyPct: g.busy, tempC: g.celsius, vramUsed: g.vramUsed, vramTotal: g.vramTotal, powerW: g.powerW, asleep: g.asleep === true }
         }),
         battery: Service.battery,
-        disks: Service.disks.map(function(d) { return { mount: d.mount, used: d.used, size: d.size } })
+        disks: Service.disks.map(function(d) { return { mount: d.mount, used: d.used, size: d.size } }),
+        driveHealth: Service.driveHealth,
+        alerts: Service.alertLog,
+        samplerMs: { last: Service.lastSampleMs, avg: Service.avgSampleMs }
       })
     }
     function tab(name: string): string {
       var upper = String(name).toUpperCase()
       if (root.tabs.indexOf(upper) === -1) return "unknown tab; use " + root.tabs.join("|")
       root.tab = upper
+      return "ok"
+    }
+    function span(name: string): string {
+      var v = String(name).toLowerCase()
+      if (v !== "2m" && v !== "1h") return "unknown span; use 2m|1h"
+      root.histHour = v === "1h"
       return "ok"
     }
   }
@@ -275,7 +312,7 @@ Panel {
 
     onPressed: function(b) {
       if (b === Qt.RightButton) { if (root.bar) root.bar.run("omarchy-launch-or-focus-tui btop") }
-      else if (b === Qt.MiddleButton) Service.refresh()
+      else if (b === Qt.MiddleButton) root.refreshNow()
       else root.toggle()
     }
 
@@ -375,35 +412,119 @@ Panel {
           meta: root.eggActive
             ? "One hundred eyes, ever watchful."
             : (Service.ready
-              ? "up " + Model.fmtUptime(Service.uptimeSec) + " · load " + Service.load1.toFixed(2) + " " + Service.load5.toFixed(2) + " " + Service.load15.toFixed(2)
+              ? "up " + Model.fmtUptime(Service.uptimeSec) + " · load " + Service.load1.toFixed(2)
               : "Gathering data…")
           foreground: root.foreground
           fontFamily: root.fontFamily
           iconComponent: Component {
+            // The eye of Argus heads its own panel — and blinks on the
+            // same lazy schedule as the bar placeholder.
             OpticalGlyph {
+              id: heroEye
               width: Style.font.display
               height: Style.font.display
-              text: "\u{f0ee0}"
+              text: Model.PLACEHOLDER_ICON
               fontFamily: root.fontFamily
               fontSize: Style.font.display
               color: root.foreground
+
+              property real blinkY: 1
+              transform: Scale {
+                origin.y: heroEye.height / 2
+                yScale: heroEye.blinkY
+              }
+
+              Timer {
+                running: root.opened
+                repeat: true
+                interval: 7000
+                onTriggered: {
+                  heroBlink.restart()
+                  interval = 5000 + Math.round(Math.random() * 9000)
+                }
+              }
+
+              SequentialAnimation {
+                id: heroBlink
+                NumberAnimation { target: heroEye; property: "blinkY"; to: 0.08; duration: 70 }
+                NumberAnimation { target: heroEye; property: "blinkY"; to: 1; duration: 110 }
+              }
             }
           }
           trailingControl: Component {
             PanelActionButton {
+              id: refreshButton
               iconText: "\u{f0450}"
               tooltipText: "Refresh now"
               foreground: root.foreground
               fontFamily: root.fontFamily
               fontSize: Style.font.subtitle
               size: Style.space(28)
-              onClicked: Service.refresh()
+              onClicked: root.refreshNow()
+
+              // One spin per refresh, whichever gesture triggered it.
+              Connections {
+                target: root
+                function onRefreshPulseChanged() { refreshSpin.restart() }
+              }
+
+              NumberAnimation {
+                id: refreshSpin
+                target: refreshButton
+                property: "rotation"
+                from: 0
+                to: 360
+                duration: 450
+                easing.type: Easing.OutCubic
+              }
+            }
+          }
+        }
+
+        // The watch row: every vital on every tab — Argus never goes blind
+        // to the rest of the system while you read one tab. Dim at rest,
+        // urgent when a metric is, foreground for the tab you're on.
+        // Clicking a vital jumps to the tab that explains it.
+        Flow {
+          visible: root.vitalSegs.length > 0
+          width: parent.width
+          spacing: Style.space(12)
+
+          Repeater {
+            model: root.vitalSegs
+
+            Text {
+              id: vital
+              required property var modelData
+              readonly property string target: root.tabForKey(modelData.key)
+              text: modelData.text
+              color: modelData.urgent ? root.urgent
+                : (vital.target === root.tab ? root.foreground : root.dim)
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  if (vital.target !== "" && root.tabs.indexOf(vital.target) !== -1) root.tab = vital.target
+                }
+              }
             }
           }
         }
 
         ButtonGroup {
-          options: root.tabs
+          // Underlining each tab's first letter advertises the letter-jump
+          // hotkey; the leading tag also flips the label into styled text.
+          options: {
+            var opts = []
+            for (var i = 0; i < root.tabs.length; i++) {
+              var t = root.tabs[i]
+              opts.push({ value: t, label: "<u>" + t.charAt(0) + "</u>" + t.slice(1) })
+            }
+            return opts
+          }
           value: root.tab
           foreground: root.foreground
           accent: Color.accent
@@ -467,16 +588,12 @@ Panel {
 
             Sparkline {
               width: parent.width
-              values: Service.cpuHist
+              values: root.histFor(Service.cpuHist, "cpu")
               maxValue: 100
+              markers: root.alertMarkers(["cpu", "cputemp"])
             }
 
-            Text {
-              text: root.histSpan
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
+            SpanCaption {}
 
             Text {
               text: Service.corePcts.length + " threads"
@@ -503,7 +620,9 @@ Panel {
                     anchors.bottom: parent.bottom
                     anchors.left: parent.left
                     anchors.right: parent.right
-                    height: Math.max(Style.space(2), parent.height * parent.modelData / 100)
+                    // An idle thread shows an empty cell — a minimum fill on
+                    // all 16+ cells reads as a dashed line of phantom load.
+                    height: parent.modelData < 1 ? 0 : Math.max(Style.space(2), parent.height * parent.modelData / 100)
                     radius: parent.radius
                     color: root.meterColor(parent.modelData / 100)
                   }
@@ -567,16 +686,12 @@ Panel {
 
             Sparkline {
               width: parent.width
-              values: Service.memHist
+              values: root.histFor(Service.memHist, "mem")
               maxValue: 100
+              markers: root.alertMarkers(["ram"])
             }
 
-            Text {
-              text: root.histSpan
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
+            SpanCaption {}
 
             MeterRow {
               visible: Service.swapTotal > 0
@@ -673,16 +788,13 @@ Panel {
                 Sparkline {
                   visible: gpuBlock.isPrimary && !modelData.asleep && isFinite(modelData.busy)
                   width: parent.width
-                  values: Service.gpuHist
+                  values: root.histFor(Service.gpuHist, "gpu")
                   maxValue: 100
+                  markers: root.alertMarkers(["gpu", "gputemp", "vram"])
                 }
 
-                Text {
+                SpanCaption {
                   visible: gpuBlock.isPrimary && !modelData.asleep && isFinite(modelData.busy)
-                  text: root.histSpan
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
                 }
 
                 MeterRow {
@@ -705,6 +817,39 @@ Panel {
                 DetailRow {
                   label: "Power draw"
                   value: isFinite(modelData.powerW) && modelData.powerW > 0 ? Model.fmtWatts(modelData.powerW) : ""
+                }
+
+                // This card's busiest DRM clients (fdinfo; drivers without
+                // usage stats — proprietary NVIDIA — simply list nothing).
+                readonly property var procs: {
+                  var pdev = Service.gpuPdev[modelData.card]
+                  if (!pdev) return []
+                  var rows = []
+                  for (var i = 0; i < Service.gpuProcs.length; i++) {
+                    var p = Service.gpuProcs[i]
+                    if (p.pdev !== pdev) continue
+                    if (p.pct < 0.5 && p.vramKib < 51200) continue
+                    rows.push(p)
+                    if (rows.length >= 6) break
+                  }
+                  return rows
+                }
+
+                PanelSectionHeader {
+                  visible: gpuBlock.procs.length > 0
+                  text: "TOP PROCESSES"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                }
+
+                Repeater {
+                  model: gpuBlock.procs
+
+                  DetailRow {
+                    required property var modelData
+                    label: modelData.comm + " · " + modelData.pid
+                    value: Model.fmtPct(modelData.pct) + " · " + Model.fmtBytes(modelData.vramKib * 1024)
+                  }
                 }
               }
             }
@@ -760,30 +905,26 @@ Panel {
               value: Model.fmtPsi(Service.psi.io, "some")
             }
 
-            Text {
-              text: "Read · session peak " + Model.fmtBytes(Service.peakIoRead) + "/s · " + root.histSpan
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
+            SpanCaption {
+              prefix: "Read · session peak " + Model.fmtBytes(Service.peakIoRead) + "/s · "
             }
 
             Sparkline {
               width: parent.width
-              values: Service.ioReadHist
+              values: root.histFor(Service.ioReadHist, "ioRead")
               heat: false
+              peakValue: Service.peakIoRead
             }
 
-            Text {
-              text: "Write · session peak " + Model.fmtBytes(Service.peakIoWrite) + "/s · " + root.histSpan
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
+            SpanCaption {
+              prefix: "Write · session peak " + Model.fmtBytes(Service.peakIoWrite) + "/s · "
             }
 
             Sparkline {
               width: parent.width
-              values: Service.ioWriteHist
+              values: root.histFor(Service.ioWriteHist, "ioWrite")
               heat: false
+              peakValue: Service.peakIoWrite
             }
 
             Repeater {
@@ -793,6 +934,24 @@ Panel {
                 required property var modelData
                 label: modelData.model !== "" ? modelData.model + " · " + modelData.dev : modelData.dev
                 value: "R " + Model.fmtBytes(modelData.read) + "/s · W " + Model.fmtBytes(modelData.write) + "/s"
+              }
+            }
+
+            PanelSectionHeader {
+              visible: Service.driveHealth.length > 0
+              text: "DRIVE HEALTH"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Repeater {
+              model: Service.driveHealth
+
+              DetailRow {
+                required property var modelData
+                label: modelData.model !== "" ? modelData.model + " · " + modelData.dev : modelData.dev
+                value: Model.fmtDriveHealth(modelData)
+                urgent: Model.driveHealthBad(modelData)
               }
             }
           }
@@ -811,33 +970,29 @@ Panel {
 
             DetailRow {
               label: "Total"
-              value: Service.ready ? "\u{f0045} " + Model.fmtBytes(Service.netDown) + "/s   \u{f005d} " + Model.fmtBytes(Service.netUp) + "/s" : ""
+              value: Service.ready ? "\u{f0045} " + Model.fmtBytes(Service.netDown) + "/s · \u{f005d} " + Model.fmtBytes(Service.netUp) + "/s" : ""
             }
 
-            Text {
-              text: "Download · session peak " + Model.fmtBytes(Service.peakNetDown) + "/s · " + root.histSpan
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
+            SpanCaption {
+              prefix: "Download · session peak " + Model.fmtBytes(Service.peakNetDown) + "/s · "
             }
 
             Sparkline {
               width: parent.width
-              values: Service.netDownHist
+              values: root.histFor(Service.netDownHist, "netDown")
               heat: false
+              peakValue: Service.peakNetDown
             }
 
-            Text {
-              text: "Upload · session peak " + Model.fmtBytes(Service.peakNetUp) + "/s · " + root.histSpan
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
+            SpanCaption {
+              prefix: "Upload · session peak " + Model.fmtBytes(Service.peakNetUp) + "/s · "
             }
 
             Sparkline {
               width: parent.width
-              values: Service.netUpHist
+              values: root.histFor(Service.netUpHist, "netUp")
               heat: false
+              peakValue: Service.peakNetUp
             }
 
             Repeater {
@@ -847,7 +1002,7 @@ Panel {
                 required property var modelData
                 visible: modelData.total > 0
                 label: modelData.iface + (modelData.virtual ? " · virtual, not in totals" : "")
-                value: "\u{f0045} " + Model.fmtBytes(modelData.down) + "/s   \u{f005d} " + Model.fmtBytes(modelData.up) + "/s"
+                value: "\u{f0045} " + Model.fmtBytes(modelData.down) + "/s · \u{f005d} " + Model.fmtBytes(modelData.up) + "/s"
               }
             }
           }
@@ -906,137 +1061,160 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            PanelSectionHeader {
-              text: "TEMPERATURES"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-            }
-
+            // Sensors grouped by physical device: one header per device
+            // ("NVMe · KINGSTON SNV3S1000G"), just the sensor label per row —
+            // Super I/O chips would otherwise repeat their name a dozen times.
             Repeater {
-              model: Service.temps
+              model: Model.groupTemps(Service.temps)
 
               Column {
-                id: sensorRow
+                id: tempGroup
                 required property var modelData
-                readonly property string skey: Model.sensorKey(modelData)
-                readonly property real limit: Model.sensorThreshold(Service.sensorThresholds, modelData)
-                readonly property bool over: isFinite(limit) && modelData.celsius >= limit
-                readonly property bool editing: root.editingSensor === skey
-                readonly property bool hiddenSensor: root.hiddenSensors.indexOf(skey) !== -1
-                visible: !hiddenSensor || root.showHiddenSensors
+                // A group whose rows are all hidden hides its header too.
+                readonly property bool anyVisible: {
+                  if (root.showHiddenSensors) return true
+                  for (var i = 0; i < modelData.sensors.length; i++) {
+                    if (root.hiddenSensors.indexOf(Model.sensorKey(modelData.sensors[i])) === -1) return true
+                  }
+                  return false
+                }
+                visible: anyVisible
                 width: parent.width
                 spacing: Style.space(4)
 
-                RowLayout {
-                  width: parent.width
-                  spacing: Style.space(8)
-
-                  Text {
-                    Layout.fillWidth: true
-                    text: Model.tempName(sensorRow.modelData)
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                    elide: Text.ElideRight
-                  }
-
-                  Text {
-                    visible: isFinite(sensorRow.limit) && !sensorRow.editing
-                    text: "alert " + sensorRow.limit + "°"
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                  }
-
-                  Text {
-                    text: Model.fmtTemp(sensorRow.modelData.celsius)
-                    color: sensorRow.over ? root.urgent : root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                  }
-
-                  PanelActionButton {
-                    iconText: sensorRow.hiddenSensor ? "\u{f0208}" : "\u{f0209}"
-                    tooltipText: sensorRow.hiddenSensor ? "Show this sensor" : "Hide this sensor"
-                    foreground: sensorRow.hiddenSensor ? Color.accent : root.dim
-                    fontFamily: root.fontFamily
-                    fontSize: Style.font.bodySmall
-                    size: Style.space(22)
-                    onClicked: root.toggleSensorHidden(sensorRow.skey)
-                  }
-
-                  PanelActionButton {
-                    iconText: "\u{f009a}"
-                    tooltipText: isFinite(sensorRow.limit) ? "Edit alert threshold" : "Set alert threshold"
-                    foreground: isFinite(sensorRow.limit) ? Color.accent : root.dim
-                    fontFamily: root.fontFamily
-                    fontSize: Style.font.bodySmall
-                    size: Style.space(22)
-                    onClicked: {
-                      if (sensorRow.editing) {
-                        root.editingSensor = ""
-                      } else {
-                        if (!isFinite(sensorRow.limit)) {
-                          root.setSensorLimit(sensorRow.skey, Model.suggestedSensorThreshold(sensorRow.modelData.celsius))
-                        }
-                        root.editingSensor = sensorRow.skey
-                      }
-                    }
-                  }
+                PanelSectionHeader {
+                  text: tempGroup.modelData.title
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
                 }
 
-                RowLayout {
-                  visible: sensorRow.editing
-                  anchors.right: parent.right
-                  spacing: Style.space(6)
+                Repeater {
+                  model: tempGroup.modelData.sensors
 
-                  Text {
-                    text: "Alert at"
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                  }
+                  Column {
+                    id: sensorRow
+                    required property var modelData
+                    readonly property string skey: Model.sensorKey(modelData)
+                    readonly property real limit: Model.sensorThreshold(Service.sensorThresholds, modelData)
+                    readonly property bool over: isFinite(limit) && modelData.celsius >= limit
+                    readonly property bool editing: root.editingSensor === skey
+                    readonly property bool hiddenSensor: root.hiddenSensors.indexOf(skey) !== -1
+                    visible: !hiddenSensor || root.showHiddenSensors
+                    width: parent.width
+                    spacing: Style.space(4)
 
-                  PanelActionButton {
-                    iconText: "\u{f0374}"
-                    tooltipText: "-5°"
-                    enabled: sensorRow.limit > Model.SENSOR_THRESHOLD_MIN
-                    foreground: root.foreground
-                    fontFamily: root.fontFamily
-                    fontSize: Style.font.bodySmall
-                    size: Style.space(22)
-                    onClicked: root.setSensorLimit(sensorRow.skey, sensorRow.limit - 5)
-                  }
+                    RowLayout {
+                      width: parent.width
+                      spacing: Style.space(8)
 
-                  Text {
-                    text: sensorRow.limit + "°"
-                    color: root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                  }
+                      Text {
+                        Layout.fillWidth: true
+                        text: Model.sensorRowLabel(sensorRow.modelData)
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                        elide: Text.ElideRight
+                      }
 
-                  PanelActionButton {
-                    iconText: "\u{f0415}"
-                    tooltipText: "+5°"
-                    enabled: sensorRow.limit < Model.SENSOR_THRESHOLD_MAX
-                    foreground: root.foreground
-                    fontFamily: root.fontFamily
-                    fontSize: Style.font.bodySmall
-                    size: Style.space(22)
-                    onClicked: root.setSensorLimit(sensorRow.skey, sensorRow.limit + 5)
-                  }
+                      Text {
+                        visible: isFinite(sensorRow.limit) && !sensorRow.editing
+                        text: "alert " + sensorRow.limit + "°"
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                      }
 
-                  PanelActionButton {
-                    iconText: "\u{f009b}"
-                    tooltipText: "Remove threshold"
-                    hoverColor: root.urgent
-                    foreground: root.foreground
-                    fontFamily: root.fontFamily
-                    fontSize: Style.font.bodySmall
-                    size: Style.space(22)
-                    onClicked: {
-                      root.setSensorLimit(sensorRow.skey, NaN)
-                      root.editingSensor = ""
+                      Text {
+                        text: Model.fmtTemp(sensorRow.modelData.celsius)
+                        color: sensorRow.over ? root.urgent : root.foreground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                      }
+
+                      PanelActionButton {
+                        iconText: sensorRow.hiddenSensor ? "\u{f0208}" : "\u{f0209}"
+                        tooltipText: sensorRow.hiddenSensor ? "Show this sensor" : "Hide this sensor"
+                        foreground: sensorRow.hiddenSensor ? Color.accent : root.dim
+                        fontFamily: root.fontFamily
+                        fontSize: Style.font.bodySmall
+                        size: Style.space(22)
+                        onClicked: root.toggleSensorHidden(sensorRow.skey)
+                      }
+
+                      PanelActionButton {
+                        iconText: "\u{f009a}"
+                        tooltipText: isFinite(sensorRow.limit) ? "Edit alert threshold" : "Set alert threshold"
+                        foreground: isFinite(sensorRow.limit) ? Color.accent : root.dim
+                        fontFamily: root.fontFamily
+                        fontSize: Style.font.bodySmall
+                        size: Style.space(22)
+                        onClicked: {
+                          if (sensorRow.editing) {
+                            root.editingSensor = ""
+                          } else {
+                            if (!isFinite(sensorRow.limit)) {
+                              root.setSensorLimit(sensorRow.skey, Model.suggestedSensorThreshold(sensorRow.modelData.celsius))
+                            }
+                            root.editingSensor = sensorRow.skey
+                          }
+                        }
+                      }
+                    }
+
+                    RowLayout {
+                      visible: sensorRow.editing
+                      anchors.right: parent.right
+                      spacing: Style.space(6)
+
+                      Text {
+                        text: "Alert at"
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                      }
+
+                      PanelActionButton {
+                        iconText: "\u{f0374}"
+                        tooltipText: "-5°"
+                        enabled: sensorRow.limit > Model.SENSOR_THRESHOLD_MIN
+                        foreground: root.foreground
+                        fontFamily: root.fontFamily
+                        fontSize: Style.font.bodySmall
+                        size: Style.space(22)
+                        onClicked: root.setSensorLimit(sensorRow.skey, sensorRow.limit - 5)
+                      }
+
+                      Text {
+                        text: sensorRow.limit + "°"
+                        color: root.foreground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                      }
+
+                      PanelActionButton {
+                        iconText: "\u{f0415}"
+                        tooltipText: "+5°"
+                        enabled: sensorRow.limit < Model.SENSOR_THRESHOLD_MAX
+                        foreground: root.foreground
+                        fontFamily: root.fontFamily
+                        fontSize: Style.font.bodySmall
+                        size: Style.space(22)
+                        onClicked: root.setSensorLimit(sensorRow.skey, sensorRow.limit + 5)
+                      }
+
+                      PanelActionButton {
+                        iconText: "\u{f009b}"
+                        tooltipText: "Remove threshold"
+                        hoverColor: root.urgent
+                        foreground: root.foreground
+                        fontFamily: root.fontFamily
+                        fontSize: Style.font.bodySmall
+                        size: Style.space(22)
+                        onClicked: {
+                          root.setSensorLimit(sensorRow.skey, NaN)
+                          root.editingSensor = ""
+                        }
+                      }
                     }
                   }
                 }
@@ -1187,9 +1365,11 @@ Panel {
                 width: parent.width
                 spacing: Style.space(4)
 
+                // Arrows keep their slot even when hidden so every label
+                // starts at the same x — flat rows make ragged indents loud.
                 PanelActionButton {
-                  visible: metricRow.isShown
-                  enabled: metricRow.shownIndex > 0
+                  opacity: metricRow.isShown ? 1 : 0
+                  enabled: metricRow.isShown && metricRow.shownIndex > 0
                   iconText: "\u{f005d}"
                   tooltipText: "Move up"
                   foreground: root.foreground
@@ -1200,8 +1380,8 @@ Panel {
                 }
 
                 PanelActionButton {
-                  visible: metricRow.isShown
-                  enabled: metricRow.shownIndex < root.shownKeys.length - 1
+                  opacity: metricRow.isShown ? 1 : 0
+                  enabled: metricRow.isShown && metricRow.shownIndex < root.shownKeys.length - 1
                   iconText: "\u{f0045}"
                   tooltipText: "Move down"
                   foreground: root.foreground
@@ -1211,14 +1391,43 @@ Panel {
                   onClicked: root.moveMetric(metricRow.modelData.key, 1)
                 }
 
-                Toggle {
+                // Fixed icon column; metrics whose bar segment composes its
+                // own glyphs (net, battery) fall back to their listIcon.
+                Text {
+                  Layout.preferredWidth: Style.space(24)
+                  text: metricRow.modelData.icon !== "" ? metricRow.modelData.icon : (metricRow.modelData.listIcon || "")
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  horizontalAlignment: Text.AlignHCenter
+
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.toggleMetric(metricRow.modelData.key)
+                  }
+                }
+
+                Text {
                   Layout.fillWidth: true
-                  label: (metricRow.modelData.icon !== "" ? metricRow.modelData.icon + "  " : "") + metricRow.modelData.label
+                  text: metricRow.modelData.label
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  elide: Text.ElideRight
+
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.toggleMetric(metricRow.modelData.key)
+                  }
+                }
+
+                ToggleSwitch {
                   checked: metricRow.isShown
                   foreground: root.foreground
                   accent: Color.accent
-                  fontFamily: root.fontFamily
-                  onClicked: root.toggleMetric(metricRow.modelData.key)
+                  onToggled: root.toggleMetric(metricRow.modelData.key)
                 }
               }
             }
@@ -1242,6 +1451,18 @@ Panel {
                 font.pixelSize: Style.font.caption
                 wrapMode: Text.WordWrap
               }
+            }
+
+            Text {
+              visible: Service.avgSampleMs > 0
+              width: parent.width
+              text: "Argus's own cost: sampling takes ~" + Math.round(Service.avgSampleMs)
+                + " ms of each " + Service.intervalSec + "s tick (last " + Math.round(Service.lastSampleMs) + " ms)"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+              horizontalAlignment: Text.AlignHCenter
             }
 
             Text {
@@ -1274,6 +1495,20 @@ Panel {
             horizontalAlignment: Text.AlignHCenter
           }
         }
+      }
+
+      // Thin scroll indicator so long tabs (TEMP, PROC) signal the content
+      // below the fold. Lives outside the Flickable — its children scroll.
+      Rectangle {
+        visible: flick.contentHeight > flick.height
+        readonly property real thumbHeight: Math.max(Style.space(24), flick.height * flick.height / Math.max(1, flick.contentHeight))
+        readonly property real travel: Math.max(1, flick.contentHeight - flick.height)
+        anchors.right: parent.right
+        width: Style.space(3)
+        radius: width / 2
+        color: Qt.alpha(root.foreground, 0.25)
+        height: thumbHeight
+        y: flick.y + (flick.height - thumbHeight) * Math.max(0, Math.min(1, flick.contentY / travel))
       }
 
       // The hundred eyes of Argus Panoptes. Some say they can be summoned
@@ -1346,6 +1581,31 @@ Panel {
     }
   }
 
+  // Sparkline caption that doubles as the history-span toggle: the active
+  // span renders in the accent color, and clicking anywhere on the caption
+  // flips every chart between the fine ring and the hour ring. The hour
+  // ring keeps each minute's peak, so spikes survive the zoom-out.
+  component SpanCaption: Text {
+    property string prefix: ""
+    readonly property string fineLabel: Model.fmtUptime(Model.HISTORY_LEN * Service.intervalSec)
+    text: {
+      var accent = root.colorHex(Color.accent)
+      var fine = root.histHour ? fineLabel : "<font color=\"" + accent + "\">" + fineLabel + "</font>"
+      var hour = root.histHour ? "<font color=\"" + accent + "\">1h peaks</font>" : "1h peaks"
+      return prefix + "last " + fine + " · " + hour
+    }
+    textFormat: Text.StyledText
+    color: root.dim
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+
+    MouseArea {
+      anchors.fill: parent
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.histHour = !root.histHour
+    }
+  }
+
   // Section header plus the hardware's actual name underneath.
   component NameHeader: Column {
     required property string title
@@ -1413,6 +1673,8 @@ Panel {
   component DetailRow: RowLayout {
     required property string label
     property string value: ""
+    // Paints the value in the urgent color (drive health warnings, etc.).
+    property bool urgent: false
     width: parent ? parent.width : 0
     visible: value !== ""
     spacing: Style.space(12)
@@ -1428,7 +1690,7 @@ Panel {
 
     Text {
       text: parent.value
-      color: root.foreground
+      color: parent.urgent ? root.urgent : root.foreground
       font.family: root.fontFamily
       font.pixelSize: Style.font.body
       horizontalAlignment: Text.AlignRight
@@ -1494,15 +1756,22 @@ Panel {
   component Sparkline: Item {
     id: spark
     property var values: []
-    property real maxValue: 0 // 0 = autoscale to the series peak
-    property bool heat: true  // color bars by fraction; false = plain accent
+    property real maxValue: 0  // 0 = autoscale to the series peak
+    property bool heat: true   // color bars by fraction; false = plain accent
+    // Session peak of the series. When set it becomes the scale ceiling, so
+    // the y-axis stays put as spikes scroll out of the window instead of
+    // rescaling the whole chart every tick.
+    property real peakValue: 0
+    // Slots (back from the right edge) where an alert fired on this series;
+    // each gets an urgent tick hanging from the top of the chart.
+    property var markers: []
     height: Style.space(34)
 
     readonly property real peak: {
       if (maxValue > 0) return maxValue
       var m = 1
       for (var i = 0; i < values.length; i++) if (values[i] > m) m = values[i]
-      return m
+      return Math.max(m, peakValue)
     }
     readonly property real slot: width / Model.HISTORY_LEN
 
@@ -1512,6 +1781,26 @@ Panel {
       color: Qt.alpha(root.foreground, 0.07)
     }
 
+    // Solid baseline; idle samples render nothing above it instead of the
+    // dashed row of 2px stubs a per-bar minimum height would paint.
+    Rectangle {
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.bottom: parent.bottom
+      height: 1
+      color: Qt.alpha(root.foreground, 0.25)
+    }
+
+    // The session-peak ceiling, when the chart is scaled by one.
+    Rectangle {
+      visible: spark.peakValue > 0
+      anchors.left: parent.left
+      anchors.right: parent.right
+      y: 1 + (spark.height - 3) * (1 - Math.min(1, spark.peakValue / spark.peak))
+      height: 1
+      color: Qt.alpha(root.foreground, 0.18)
+    }
+
     Repeater {
       model: spark.values
 
@@ -1519,13 +1808,30 @@ Panel {
         required property int index
         required property real modelData
         readonly property real fraction: Math.max(0, Math.min(1, modelData / spark.peak))
+        readonly property real rawHeight: (spark.height - 2) * fraction
         x: spark.width - (spark.values.length - index) * spark.slot
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 1
         width: Math.max(1, spark.slot - 1)
-        height: Math.max(2, (spark.height - 2) * fraction)
+        height: rawHeight < 1 ? 0 : Math.max(2, rawHeight)
         radius: 1
         color: spark.heat ? root.meterColor(fraction) : Color.accent
+      }
+    }
+
+    Repeater {
+      model: spark.markers
+
+      // Foreground, not urgent: the marker usually sits on a bar that is
+      // itself urgent-colored (that's why the alert fired), so the urgent
+      // color would camouflage it.
+      Rectangle {
+        required property var modelData
+        x: spark.width - (modelData + 1) * spark.slot
+        y: 0
+        width: Math.max(2, spark.slot - 1)
+        height: Style.space(5)
+        color: root.foreground
       }
     }
   }

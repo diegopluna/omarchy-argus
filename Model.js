@@ -12,9 +12,12 @@ var METRICS = [
   { key: "vram",    label: "VRAM usage",      icon: "\u{f061a}" }, // 󰘚
   { key: "disk",    label: "Disk usage",      icon: "\u{f02ca}" }, // 󰋊
   { key: "io",      label: "Disk I/O",        icon: "\u{f02ca}" },
-  { key: "net",     label: "Network traffic", icon: "" },
+  // net and bat compose their own bar glyphs (↓/↑ arrows, charge-level
+  // battery), so `icon` stays empty; `listIcon` gives the BAR tab's
+  // toggle list a static icon anyway.
+  { key: "net",     label: "Network traffic", icon: "", listIcon: "\u{f06f3}" }, // 󰛳
   { key: "load",    label: "Load average",    icon: "\u{f04c5}" }, // 󰓅
-  { key: "bat",     label: "Battery",         icon: "" }           // icon tracks charge
+  { key: "bat",     label: "Battery",         icon: "", listIcon: "\u{f0079}" } // 󰁹; bar icon tracks charge
 ]
 
 var DEFAULT_SHOW = ["cpu", "ram", "cputemp"]
@@ -100,6 +103,7 @@ function parseSample(text) {
   var diskModels = parseDiskNames(sections.DISKNAMES || [])
   var diskLinks = parseDiskLinks(sections.DISKLINKS || [])
   var gpuNames = parseGpuNames(sections.GPUNAMES || [])
+  var gpuPdev = parseGpuPdev(sections.GPUPDEV || [])
   var nvidiaLines = sections.NVIDIA || []
   var nvidiaSuspended = nvidiaLines.length > 0 && nvidiaLines[0].trim() === "suspended"
   return {
@@ -125,6 +129,9 @@ function parseSample(text) {
     nvidiaSuspended: nvidiaSuspended,
     psCpu: parsePs(sections.PSCPU || []),
     psMem: parsePs(sections.PSMEM || []),
+    gpuPdev: gpuPdev,
+    gpuProcs: parseGpuProc(sections.GPUPROC || []),
+    driveHealth: parseDriveHealth(sections.DRIVEHEALTH || []),
     batteries: parseBattery(sections.BAT || [])
   }
 }
@@ -418,18 +425,51 @@ var CHIP_NAMES = [
   [/battery/, "Battery"]
 ]
 
-// "NVMe · KINGSTON SNV3S1000G · Composite" style display name; fans share
-// the shape so they reuse this.
-function tempName(temp) {
-  var friendly = temp.chip
+function friendlyChip(chip) {
   for (var i = 0; i < CHIP_NAMES.length; i++) {
-    if (CHIP_NAMES[i][0].test(temp.chip)) { friendly = CHIP_NAMES[i][1]; break }
+    if (CHIP_NAMES[i][0].test(chip)) return CHIP_NAMES[i][1]
   }
+  return chip
+}
+
+// The device half of a sensor's display name: "NVMe · KINGSTON SNV3S1000G",
+// "Motherboard · nct6799". Doubles as the TEMP-tab group title.
+function tempDeviceTitle(temp) {
+  var friendly = friendlyChip(temp.chip)
   var parts = [friendly]
   if (temp.device && temp.device !== "") parts.push(temp.device)
   else if (friendly !== temp.chip) parts.push(temp.chip)
-  if (temp.label && temp.label !== "") parts.push(temp.label)
   return parts.join(" · ")
+}
+
+// "NVMe · KINGSTON SNV3S1000G · Composite" style display name; fans share
+// the shape so they reuse this.
+function tempName(temp) {
+  var name = tempDeviceTitle(temp)
+  if (temp.label && temp.label !== "") name += " · " + temp.label
+  return name
+}
+
+// TEMP-tab groups: sensors sharing a physical device render under one
+// device header, with just the sensor label per row.
+function groupTemps(temps) {
+  var groups = []
+  var byTitle = {}
+  for (var i = 0; i < temps.length; i++) {
+    var title = tempDeviceTitle(temps[i])
+    if (!(title in byTitle)) {
+      byTitle[title] = { title: title, sensors: [] }
+      groups.push(byTitle[title])
+    }
+    byTitle[title].sensors.push(temps[i])
+  }
+  return groups
+}
+
+// The per-row label inside a group: the sensor's own label; chips that
+// expose a single unnamed sensor fall back to a generic one.
+function sensorRowLabel(temp) {
+  return temp.label && temp.label !== "" ? temp.label : "Temperature"
 }
 
 // "Advanced Micro Devices, Inc. [AMD/ATI] Navi 48 [Radeon RX 9070/...] (rev c0)"
@@ -517,6 +557,128 @@ function parseNvidia(lines) {
     })
   }
   return result
+}
+
+// GPUPDEV lines: "card|pciaddr" → { "0": "0000:0f:00.0", ... }; joins
+// per-process GPU clients (which carry drm-pdev) back to their card.
+function parseGpuPdev(lines) {
+  var map = {}
+  for (var i = 0; i < lines.length; i++) {
+    var idx = lines[i].indexOf("|")
+    if (idx > 0) map[lines[i].slice(0, idx)] = lines[i].slice(idx + 1).trim()
+  }
+  return map
+}
+
+// GPUPROC lines: pid|comm|pdev|client-id|engine_ns_total|vram_kib — one
+// DRM client per line, engine time cumulative since the client opened.
+function parseGpuProc(lines) {
+  var result = []
+  for (var i = 0; i < lines.length; i++) {
+    var p = lines[i].split("|")
+    if (p.length < 6) continue
+    result.push({
+      pid: p[0],
+      comm: p[1].trim(),
+      pdev: p[2],
+      client: p[3],
+      engineNs: Number(p[4]) || 0,
+      vramKib: Number(p[5]) || 0
+    })
+  }
+  return result
+}
+
+// Per-process GPU usage between two client snapshots: engine-time delta
+// over elapsed wall clock, aggregated per (pid, card). Engines can run in
+// parallel, so the sum is capped at 100. Sorted busiest first.
+function gpuProcRates(prev, cur, elapsedSec) {
+  var prevByKey = {}
+  if (prev) {
+    for (var i = 0; i < prev.length; i++) {
+      var e = prev[i]
+      prevByKey[e.pid + "|" + e.pdev + "|" + e.client] = e
+    }
+  }
+  var byProc = {}
+  var order = []
+  for (var j = 0; j < (cur || []).length; j++) {
+    var c = cur[j]
+    var pct = 0
+    var p = prevByKey[c.pid + "|" + c.pdev + "|" + c.client]
+    if (p && elapsedSec > 0 && c.engineNs >= p.engineNs) {
+      pct = 100 * (c.engineNs - p.engineNs) / (elapsedSec * 1e9)
+    }
+    var key = c.pid + "|" + c.pdev
+    if (!byProc[key]) {
+      byProc[key] = { pid: c.pid, comm: c.comm, pdev: c.pdev, pct: 0, vramKib: 0 }
+      order.push(key)
+    }
+    byProc[key].pct += pct
+    byProc[key].vramKib += c.vramKib
+  }
+  var result = []
+  for (var k = 0; k < order.length; k++) {
+    var row = byProc[order[k]]
+    row.pct = Math.min(100, row.pct)
+    result.push(row)
+  }
+  result.sort(function(a, b) { return b.pct - a.pct || b.vramKib - a.vramKib })
+  return result
+}
+
+// DRIVEHEALTH lines (from udisks2, see sample.sh):
+//   dev|nvme|model|poweron_h|critwarn|wear_pct|warn_temp_s|crit_temp_s|media_err|unsafe
+//   dev|ata|model|poweron_h|failing
+function parseDriveHealth(lines) {
+  var result = []
+  for (var i = 0; i < lines.length; i++) {
+    var p = lines[i].split("|")
+    if (p.length < 5) continue
+    var entry = {
+      dev: p[0].trim(),
+      kind: p[1].trim(),
+      model: p[2].trim(),
+      powerOnHours: Number(p[3]) || 0,
+      warning: (p[4] || "").trim(),
+      wearPct: NaN,
+      warnTempSec: NaN,
+      critTempSec: NaN,
+      mediaErrors: NaN,
+      unsafeShutdowns: NaN
+    }
+    if (entry.kind === "nvme" && p.length >= 10) {
+      entry.wearPct = p[5] !== "" ? Number(p[5]) : NaN
+      entry.warnTempSec = p[6] !== "" ? Number(p[6]) : NaN
+      entry.critTempSec = p[7] !== "" ? Number(p[7]) : NaN
+      entry.mediaErrors = p[8] !== "" ? Number(p[8]) : NaN
+      entry.unsafeShutdowns = p[9] !== "" ? Number(p[9]) : NaN
+    }
+    result.push(entry)
+  }
+  return result
+}
+
+// A drive worth worrying about: the controller raised a critical warning
+// (or SATA SMART says failing), wear is nearly spent, or the media itself
+// has logged errors.
+function driveHealthBad(drive) {
+  if (!drive) return false
+  if (drive.warning !== "") return true
+  if (isFinite(drive.wearPct) && drive.wearPct >= 90) return true
+  if (isFinite(drive.mediaErrors) && drive.mediaErrors > 0) return true
+  return false
+}
+
+// One-line health summary: "worn 9% · on 148d · healthy".
+function fmtDriveHealth(drive) {
+  var parts = []
+  if (isFinite(drive.wearPct)) parts.push("worn " + Math.round(drive.wearPct) + "%")
+  if (drive.powerOnHours > 0) parts.push("on " + fmtUptime(drive.powerOnHours * 3600))
+  if (drive.warning !== "") parts.push(drive.warning)
+  else if (isFinite(drive.mediaErrors) && drive.mediaErrors > 0) parts.push(drive.mediaErrors + " media errors")
+  else parts.push("healthy")
+  return parts.join(" · ")
 }
 
 // A runtime-suspended NVIDIA card, remembered from its last awake sample:
@@ -788,6 +950,52 @@ function pushHistory(list, value, max) {
   return result
 }
 
+// ---- Tiered history ------------------------------------------------------
+// Behind the per-tick ring sits an hour ring: HISTORY_LEN slots of
+// HOUR_SLOT_SEC seconds, each keeping the *maximum* the series hit in that
+// window — history is for finding spikes, and averaging would erase
+// exactly what you scrolled back to find. All series roll up in one
+// object so QML rebinds once per tick.
+
+var HOUR_SLOT_SEC = 60
+var HOUR_KEYS = ["cpu", "mem", "gpu", "netDown", "netUp", "ioRead", "ioWrite"]
+
+function emptyHourHist() {
+  var hour = { since: 0 }
+  for (var i = 0; i < HOUR_KEYS.length; i++) hour[HOUR_KEYS[i]] = { values: [], acc: NaN }
+  return hour
+}
+
+// Fold one tick's values into the hour rings; when the current slot's
+// wall-clock window closes, its accumulated peak is pushed and a new slot
+// starts. Returns a new object (QML rebind).
+function pushHourHist(hour, values, nowMs) {
+  var next = { since: hour && hour.since ? hour.since : nowMs }
+  var close = nowMs - next.since >= HOUR_SLOT_SEC * 1000
+  for (var i = 0; i < HOUR_KEYS.length; i++) {
+    var key = HOUR_KEYS[i]
+    var prev = (hour && hour[key]) || { values: [], acc: NaN }
+    var v = Number(values[key])
+    if (!isFinite(v)) v = 0
+    var acc = isFinite(prev.acc) ? Math.max(prev.acc, v) : v
+    next[key] = close
+      ? { values: pushHistory(prev.values, acc), acc: NaN }
+      : { values: prev.values, acc: acc }
+  }
+  if (close) next.since = nowMs
+  return next
+}
+
+// The hour series a sparkline renders: completed slots plus the live
+// partial slot at the right edge, capped to the chart's slot count.
+function hourValues(hour, key) {
+  var entry = hour && hour[key]
+  if (!entry) return []
+  var result = isFinite(entry.acc) ? entry.values.concat([entry.acc]) : entry.values.slice()
+  while (result.length > HISTORY_LEN) result.shift()
+  return result
+}
+
 // ---- Formatting ----------------------------------------------------------
 
 function fmtBytes(bytes) {
@@ -845,23 +1053,40 @@ function batteryIcon(pct, charging) {
   return String.fromCodePoint(0xf007a + tier - 1) // 󰁺 (10%) … 󰂂 (90%)
 }
 
+// Left-pad a value with no-break spaces (plain spaces collapse in the
+// styled-text urgent path) so bar segments keep a stable width as values
+// change — "9%" → "10%" would otherwise shift every neighboring widget.
+var PAD_SPACE = "\u00A0"
+
+function padValue(text, width) {
+  var s = String(text)
+  while (s.length < width) s = PAD_SPACE + s
+  return s
+}
+
 // The short value a metric shows in the bar, or "" to hide the segment
 // (e.g. GPU metrics on a machine without a supported GPU, battery on a
-// desktop, an asleep NVIDIA card).
-function metricValue(key, data) {
+// desktop, an asleep NVIDIA card). With `pad`, values are no-break-space
+// padded to their common widest form (horizontal bar only — padding would
+// off-center the vertical bar's centered lines).
+function metricValue(key, data, pad) {
+  // Percentages and temperatures are 2 digits nearly always; rates swing
+  // between "0" and "9.9M" constantly, so they pad to 4.
+  function p3(s) { return pad && s !== "" ? padValue(s, 3) : s }
+  function p4(s) { return pad ? padValue(s, 4) : s }
   switch (key) {
-    case "cpu": return fmtPct(data.cpuPct)
-    case "cputemp": return isFinite(data.cpuTemp) ? fmtTemp(data.cpuTemp) : ""
-    case "ram": return fmtPct(data.memPct)
-    case "gpu": return data.gpu && !data.gpu.asleep && isFinite(data.gpu.busy) ? fmtPct(data.gpu.busy) : ""
-    case "gputemp": return data.gpu && !data.gpu.asleep && isFinite(data.gpu.celsius) ? fmtTemp(data.gpu.celsius) : ""
-    case "vram": return data.gpu && !data.gpu.asleep && data.gpu.vramTotal > 0 ? fmtPct(100 * data.gpu.vramUsed / data.gpu.vramTotal) : ""
-    case "disk": return data.disk ? fmtPct(100 * data.disk.used / data.disk.size) : ""
-    case "io": return data.io ? "R" + fmtRateShort(data.io.read) + " W" + fmtRateShort(data.io.write) : ""
-    case "net": return ICON_DOWN + fmtRateShort(data.netDown) + " " + ICON_UP + fmtRateShort(data.netUp)
+    case "cpu": return p3(fmtPct(data.cpuPct))
+    case "cputemp": return isFinite(data.cpuTemp) ? p3(fmtTemp(data.cpuTemp)) : ""
+    case "ram": return p3(fmtPct(data.memPct))
+    case "gpu": return data.gpu && !data.gpu.asleep && isFinite(data.gpu.busy) ? p3(fmtPct(data.gpu.busy)) : ""
+    case "gputemp": return data.gpu && !data.gpu.asleep && isFinite(data.gpu.celsius) ? p3(fmtTemp(data.gpu.celsius)) : ""
+    case "vram": return data.gpu && !data.gpu.asleep && data.gpu.vramTotal > 0 ? p3(fmtPct(100 * data.gpu.vramUsed / data.gpu.vramTotal)) : ""
+    case "disk": return data.disk ? p3(fmtPct(100 * data.disk.used / data.disk.size)) : ""
+    case "io": return data.io ? "R" + p4(fmtRateShort(data.io.read)) + " W" + p4(fmtRateShort(data.io.write)) : ""
+    case "net": return ICON_DOWN + p4(fmtRateShort(data.netDown)) + " " + ICON_UP + p4(fmtRateShort(data.netUp))
     case "load": return data.load1.toFixed(2)
     case "bat": return data.battery && isFinite(data.battery.pct)
-      ? batteryIcon(data.battery.pct, data.battery.charging) + " " + fmtPct(data.battery.pct)
+      ? batteryIcon(data.battery.pct, data.battery.charging) + " " + p3(fmtPct(data.battery.pct))
       : ""
     default: return ""
   }
@@ -917,6 +1142,49 @@ function alertText(key, data, th) {
   return label + " at " + value + (limit !== "" ? " (threshold " + limit + ")" : "")
 }
 
+// ---- Alert attribution and history markers -------------------------------
+
+// Alerts that a top-process snapshot can plausibly explain: CPU-driven
+// alerts point at the top CPU process, memory at the top memory process.
+// Rates (net, io) and drive temperatures have no per-process answer
+// without root, so they stay unattributed.
+function attributableAlert(key) {
+  return key === "cpu" || key === "cputemp" || key === "ram"
+}
+
+// "chromium 61%" / "zen-bin 1.3 GB" — the likely culprit for a fired
+// alert, or "" when the alert isn't attributable or the lists are empty.
+function attributionFor(key, psCpu, psMem, memTotal) {
+  if ((key === "cpu" || key === "cputemp") && psCpu && psCpu.length > 0) {
+    var c = psCpu[0]
+    return procDisplay(c.comm).split(" ")[0] + " " + Math.round(c.cpu) + "%"
+  }
+  if (key === "ram" && psMem && psMem.length > 0) {
+    var m = psMem[0]
+    return procDisplay(m.comm).split(" ")[0] + " " + fmtBytes((Number(memTotal) || 0) * m.mem / 100)
+  }
+  return ""
+}
+
+// Map alert timestamps onto sparkline slots: each result is how many
+// samples back from the newest (right) edge the alert fired. Alerts
+// outside the visible window are dropped; duplicates collapse.
+function markerIndices(times, nowMs, intervalSec, len) {
+  var cap = len || HISTORY_LEN
+  var step = Math.max(1, Number(intervalSec) || 1) * 1000
+  var result = []
+  for (var i = 0; i < (times || []).length; i++) {
+    var back = Math.round((nowMs - times[i]) / step)
+    if (back >= 0 && back < cap && result.indexOf(back) === -1) result.push(back)
+  }
+  return result
+}
+
+// The panel's watch row: the vitals Argus keeps in view on every tab,
+// independent of which segments the user put in the bar. Health metrics
+// only — rates and load are readings, not vitals.
+var VITAL_KEYS = ["cpu", "ram", "cputemp", "gputemp", "disk", "bat"]
+
 // Shown when no metric renders a segment (all deselected, or none of the
 // selected ones has data). Without it the widget would collapse to zero
 // width and the panel — the only place to re-enable metrics — would become
@@ -924,12 +1192,13 @@ function alertText(key, data, th) {
 var PLACEHOLDER_ICON = "\u{f0208}" // 󰈈
 
 // Renderable bar segments, in the user's order: { key, text, urgent }.
+// Values are width-padded so the bar doesn't shift as numbers change.
 function barSegments(showKeys, data, th) {
   var segments = []
   for (var i = 0; i < showKeys.length; i++) {
     var metric = metricByKey(showKeys[i])
     if (!metric) continue
-    var value = metricValue(metric.key, data)
+    var value = metricValue(metric.key, data, true)
     if (value === "") continue
     segments.push({
       key: metric.key,
@@ -1006,6 +1275,16 @@ if (typeof module !== "undefined") {
     ioRates: ioRates,
     cpuTemp: cpuTemp,
     tempName: tempName,
+    parseGpuPdev: parseGpuPdev,
+    parseGpuProc: parseGpuProc,
+    gpuProcRates: gpuProcRates,
+    parseDriveHealth: parseDriveHealth,
+    driveHealthBad: driveHealthBad,
+    fmtDriveHealth: fmtDriveHealth,
+    tempDeviceTitle: tempDeviceTitle,
+    groupTemps: groupTemps,
+    sensorRowLabel: sensorRowLabel,
+    padValue: padValue,
     prettyGpuName: prettyGpuName,
     parseNvidia: parseNvidia,
     markGpuAsleep: markGpuAsleep,
@@ -1014,6 +1293,11 @@ if (typeof module !== "undefined") {
     batterySummary: batterySummary,
     batteryIcon: batteryIcon,
     pushHistory: pushHistory,
+    HOUR_SLOT_SEC: HOUR_SLOT_SEC,
+    HOUR_KEYS: HOUR_KEYS,
+    emptyHourHist: emptyHourHist,
+    pushHourHist: pushHourHist,
+    hourValues: hourValues,
     fmtBytes: fmtBytes,
     fmtRateShort: fmtRateShort,
     fmtUptime: fmtUptime,
@@ -1023,7 +1307,11 @@ if (typeof module !== "undefined") {
     metricValue: metricValue,
     metricUrgent: metricUrgent,
     ALERT_KEYS: ALERT_KEYS,
+    VITAL_KEYS: VITAL_KEYS,
     alertText: alertText,
+    attributableAlert: attributableAlert,
+    attributionFor: attributionFor,
+    markerIndices: markerIndices,
     barSegments: barSegments,
     barText: barText,
     barLines: barLines,
