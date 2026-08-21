@@ -4,6 +4,15 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- Refreshed every screenshot and the Okomart `preview.png` to the 0.8.0
+  UI (watch row, grouped TEMP, per-process GPU, flat BAR tab), and
+  reorganized the README: alert behavior — firing rules, attribution,
+  per-sensor thresholds, the hook — now lives in one Alerts section, and
+  sampling cost sits with the sampling internals.
+
 ## [0.8.0] — 2026-08-21
 
 ### Changed

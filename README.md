@@ -25,7 +25,7 @@ order in the panel's **BAR** tab; the choice persists to
 - **PROC** — top processes by CPU and by memory (full command lines), each with a terminate button (SIGTERM, after confirmation)
 - **TEMP** — every hwmon sensor, grouped by device with friendly names (CPU, GPU, NVMe with drive model, RAM, Wi-Fi, …), plus fan speeds; each sensor row can carry its own alert threshold, set inline, and noisy sensors can be hidden (hidden sensors keep alerting)
 - **BAT** — per-battery charge, status, power draw, health, and time estimate (tab appears only when a system battery exists)
-- **BAR** — toggles and reorder arrows for which metrics the bar shows, plus the last few fired alerts with timestamps; CPU and memory alerts name the process that likely caused them, and the CPU/MEM/GPU sparklines mark where in the history an alert fired
+- **BAR** — toggles and reorder arrows for which metrics the bar shows, the last few fired alerts with timestamps, and Argus's own measured sampling cost
 
 A watch row under the host name keeps every vital — CPU, RAM, CPU/GPU
 temperature, disk, battery — visible on every tab. A vital turns urgent
@@ -102,11 +102,30 @@ fallback for the CPU/GPU thresholds. Load average turns urgent when the
 discharging. Drive temperature is alert-only (it has no bar segment) and
 watches the hottest NVMe/SATA sensor.
 
-On top of those defaults, **any individual sensor** can carry its own
-alert threshold, set from the TEMP tab: the 󰂚 button on a sensor row opens
-a stepper (−/+/off). A sensor over its limit renders its row in the urgent
-color and fires a notification with the usual 3-tick hold and cooldown.
-These persist in shell.json as a `sensorThresholds` map keyed by
+## Alerts
+
+With `alerts` on, a metric that stays past its urgent threshold for three
+consecutive ticks fires one desktop notification (via `notify-send`, so it
+renders through the Omarchy shell). Temperature and battery alerts use
+critical urgency; usage alerts are normal. Each metric then stays quiet
+for a 5-minute cooldown. Alerts evaluate every sampled metric, whether or
+not its bar segment is shown.
+
+CPU and memory alerts name their likely culprit — *"CPU usage at 100%
+(threshold 90%) — chromium 61%"* — from a process snapshot taken the
+moment the alert fires. A drive whose SMART health turns bad (critical
+warning, ≥90% wear, or media errors) alerts once per session.
+
+The last ten fired alerts are kept, with timestamps, at the bottom of the
+BAR tab — for the "did anything trip while I was away?" question that a
+vanished notification can't answer — and the CPU/MEM/GPU sparklines mark
+where in the history each alert fired.
+
+On top of the default thresholds, **any individual sensor** can carry its
+own alert threshold, set from the TEMP tab: the 󰂚 button on a sensor row
+opens a stepper (−/+/off). A sensor over its limit renders its row in the
+urgent color and fires a notification with the usual 3-tick hold and
+cooldown. These persist in shell.json as a `sensorThresholds` map keyed by
 `chip|device|label`, so they survive reboots and hwmon renumbering.
 
 ### Alert hook
@@ -122,26 +141,6 @@ page a webhook:
 ```json
 "alertCommand": "curl -s -d \"$ARGUS_ALERT_TEXT\" https://ntfy.sh/my-box"
 ```
-
-### Argus's own cost
-
-The BAR tab shows what sampling actually costs (wall clock per tick,
-measured, not promised). The shell never blocks on it, and most of the
-wall time is the hwmon sensor bus itself — Super I/O chips take
-milliseconds per reading in the kernel — while the sampler's own CPU
-cost is ~10ms per tick (values are read with zero-fork bash builtins).
-
-## Alerts
-
-With `alerts` on, a metric that stays past its urgent threshold for three
-consecutive ticks fires one desktop notification (via `notify-send`, so it
-renders through the Omarchy shell), e.g. *"CPU temperature at 92°
-(threshold 85°)"*. Temperature and battery alerts use critical urgency;
-usage alerts are normal. Each metric then stays quiet for a 5-minute
-cooldown. Alerts evaluate every sampled metric, whether or not its bar
-segment is shown. The last ten fired alerts are kept, with timestamps, at
-the bottom of the BAR tab — for the "did anything trip while I was away?"
-question that a vanished notification can't answer.
 
 ## Fans
 
@@ -188,6 +187,24 @@ polling never keeps an Optimus dGPU awake, and shows the card as asleep.
 Hybrid AMD iGPU + NVIDIA dGPU systems list both, with the bar's GPU metrics
 following the card with the most VRAM.
 
+## Sampling
+
+One short bash sampler runs per refresh — shared by every bar surface, so
+multi-monitor setups still sample once. Hardware identity that cannot
+change while the shell runs (hostname, CPU model, disk models, GPU names)
+is sampled once at startup (`sample.sh static`), and top processes are
+sampled only while a panel is open, so `lsblk`/`lspci`/`ps` stay off the
+always-on hot path. `df` and `lsblk` run under `timeout` so a stale
+network mount degrades one tick instead of freezing the widget. GPU power
+draw comes from amdgpu's hwmon `power1_average` and nvidia-smi's
+`power.draw`. Usage deltas are computed in QML.
+
+The BAR tab shows what sampling actually costs (wall clock per tick,
+measured, not promised). The shell never blocks on it, and most of the
+wall time is the hwmon sensor bus itself — Super I/O chips take
+milliseconds per reading in the kernel — while the sampler's own CPU
+cost is ~10ms per tick (values are read with zero-fork bash builtins).
+
 ## Contributing a hardware fixture
 
 Argus aims to parse every machine's hwmon/GPU/battery layout correctly,
@@ -201,18 +218,6 @@ bash tests/make-fixture.sh > tests/fixtures/<cpu>-<gpu>.txt
 
 The script scrubs your hostname and process lists; review the output,
 then open a PR. One file makes your hardware a permanent regression test.
-
-## Sampling
-
-One short bash sampler runs per refresh — shared by every bar surface, so
-multi-monitor setups still sample once. Hardware identity that cannot
-change while the shell runs (hostname, CPU model, disk models, GPU names)
-is sampled once at startup (`sample.sh static`), and top processes are
-sampled only while a panel is open, so `lsblk`/`lspci`/`ps` stay off the
-always-on hot path. `df` and `lsblk` run under `timeout` so a stale
-network mount degrades one tick instead of freezing the widget. GPU power draw comes from amdgpu's hwmon
-`power1_average` and nvidia-smi's `power.draw`. Usage deltas are computed
-in QML.
 
 ---
 
