@@ -4,6 +4,17 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] — 2026-08-29
+
+### Security
+- Every Text rendering dynamic strings is pinned to
+  `textFormat: Text.PlainText` — the 1.0.0 additions (alert rows, home
+  tiles, tab strip, topology captions, process cells, sensor-alert
+  limits) had left some on Qt's default AutoText, and device/sensor
+  strings originate in sysfs model strings a USB device chooses.
+  Flagged by the marketplace's automated security baseline; the audit
+  now covers all 22 previously unpinned dynamic Text items.
+
 ## [1.0.0] — 2026-08-29
 
 ### Added

@@ -726,6 +726,7 @@ Panel {
             model: root.vitalSegs
 
             Text {
+              textFormat: Text.PlainText
               id: vital
               required property var modelData
               readonly property string target: root.tabForKey(modelData.key)
@@ -775,6 +776,7 @@ Panel {
                 height: tabLabel.implicitHeight + Style.space(5)
 
                 Text {
+                  textFormat: Text.PlainText
                   id: tabLabel
                   text: tabItem.modelData
                   color: tabItem.active ? Color.accent : (tabMouse.containsMouse ? root.foreground : root.dim)
@@ -890,6 +892,7 @@ Panel {
                       spacing: Style.space(6)
 
                       Text {
+                        textFormat: Text.PlainText
                         Layout.fillWidth: true
                         text: homeTile.modelData.icon + "  " + homeTile.modelData.label
                         color: root.dim
@@ -899,6 +902,7 @@ Panel {
                       }
 
                       Text {
+                        textFormat: Text.PlainText
                         text: homeTile.tile.value
                         color: root.foreground
                         font.family: root.fontFamily
@@ -1038,6 +1042,7 @@ Panel {
                   spacing: Style.space(3)
 
                   Text {
+                    textFormat: Text.PlainText
                     text: (topoGroup.modelData.label !== "" ? topoGroup.modelData.label + " · " : "")
                       + topoGroup.modelData.cores.length + " cores"
                       + (coreGrid.topo.smt ? ", " + Service.corePcts.length + " threads" : "")
@@ -1090,6 +1095,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 visible: coreGrid.topo.groups.length === 0
                 text: Service.corePcts.length + " threads"
                 color: root.dim
@@ -1707,6 +1713,7 @@ Panel {
                       }
 
                       Text {
+                        textFormat: Text.PlainText
                         Layout.preferredWidth: Style.space(52)
                         text: procRow.modelData.pid
                         color: root.dim
@@ -1716,6 +1723,7 @@ Panel {
                       }
 
                       Text {
+                        textFormat: Text.PlainText
                         Layout.preferredWidth: Style.space(56)
                         text: Model.fmtBytes(Service.memTotal * procRow.modelData.mem / 100)
                         color: root.foreground
@@ -1725,6 +1733,7 @@ Panel {
                       }
 
                       Text {
+                        textFormat: Text.PlainText
                         Layout.preferredWidth: Style.space(46)
                         text: procRow.modelData.cpu.toFixed(1) + "%"
                         color: root.foreground
@@ -1886,6 +1895,7 @@ Panel {
                       }
 
                       Text {
+                        textFormat: Text.PlainText
                         text: Model.fmtTemp(sensorRow.modelData.celsius)
                         color: sensorRow.over ? root.urgent : root.foreground
                         font.family: root.fontFamily
@@ -2161,6 +2171,7 @@ Panel {
                 // Fixed icon column; metrics whose bar segment composes its
                 // own glyphs (net, battery) fall back to their listIcon.
                 Text {
+                  textFormat: Text.PlainText
                   Layout.preferredWidth: Style.space(24)
                   text: metricRow.modelData.icon !== "" ? metricRow.modelData.icon : (metricRow.modelData.listIcon || "")
                   color: root.foreground
@@ -2176,6 +2187,7 @@ Panel {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   Layout.fillWidth: true
                   text: metricRow.modelData.label
                   color: root.foreground
@@ -2215,6 +2227,7 @@ Panel {
                 spacing: Style.space(4)
 
                 Text {
+                  textFormat: Text.PlainText
                   Layout.preferredWidth: Style.space(24)
                   text: homeConfigRow.modelData.icon
                   color: root.foreground
@@ -2224,6 +2237,7 @@ Panel {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   Layout.fillWidth: true
                   text: homeConfigRow.modelData.label
                   color: root.foreground
@@ -2293,6 +2307,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 text: Service.intervalSec + "s"
                 color: root.foreground
                 font.family: root.fontFamily
@@ -2312,6 +2327,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               visible: Service.avgSampleMs > 0
               width: parent.width
               text: "Argus's own cost: sampling takes ~" + Math.round(Service.avgSampleMs)
@@ -2482,6 +2498,7 @@ Panel {
                   spacing: Style.space(8)
 
                   Text {
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     text: alertRow.entry.label
                     color: root.foreground
@@ -2502,6 +2519,7 @@ Panel {
                   }
 
                   Text {
+                    textFormat: Text.PlainText
                     text: Model.alertLimitText(alertRow.entry, root.thresholds)
                     color: alertRow.on ? Color.accent : root.dim
                     font.family: root.fontFamily
@@ -2532,6 +2550,7 @@ Panel {
                   spacing: Style.space(6)
 
                   Text {
+                    textFormat: Text.PlainText
                     text: (alertRow.entry.low ? "Alert below" : "Alert above")
                     color: root.dim
                     font.family: root.fontFamily
@@ -2550,6 +2569,7 @@ Panel {
                   }
 
                   Text {
+                    textFormat: Text.PlainText
                     text: alertRow.entry.unit === "°" ? root.fmtLimitTemp(alertRow.limit) : alertRow.limit + alertRow.entry.unit
                     color: root.foreground
                     font.family: root.fontFamily
@@ -2608,6 +2628,7 @@ Panel {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   visible: isFinite(sensorAlertRow.modelData.now)
                   text: "now " + Model.fmtTemp(sensorAlertRow.modelData.now)
                   color: root.dim
@@ -2616,6 +2637,7 @@ Panel {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   text: "≥ " + root.fmtLimitTemp(sensorAlertRow.modelData.limit)
                   color: Color.accent
                   font.family: root.fontFamily
