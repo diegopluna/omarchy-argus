@@ -72,9 +72,17 @@ Panel {
     ? Model.barLines(shownKeys, Service.barData, thresholds)
     : [{ text: Model.PLACEHOLDER_ICON, urgent: false }]
 
+  // Row models must not rebuild their delegates every tick, so they hang
+  // off these stable booleans instead of the per-tick Service arrays —
+  // a bool only signals when it actually flips.
+  readonly property bool hasGpu: Service.gpus.length > 0
+  readonly property bool hasBattery: Service.batteries.length > 0
+  readonly property bool hasDriveTemp: Service.driveTemp !== null
+  readonly property bool hasDriveHealth: Service.driveHealth.length > 0
+
   readonly property var tabs: {
     var t = ["HOME", "CPU", "MEM", "GPU", "DISK", "NET", "PROC", "TEMP"]
-    if (Service.batteries.length > 0) t.push("BAT")
+    if (hasBattery) t.push("BAT")
     t.push("PWR")
     t.push("ALERTS")
     t.push("SETUP")
@@ -95,6 +103,9 @@ Panel {
     expandedProc = ""
     expandedAlertAt = 0
     Service.lastTab = tab
+    // The full process table only ships while PROC is watched; fetch it
+    // immediately on arrival instead of waiting out the tick.
+    if (tab === "PROC" && opened) Service.refresh(true)
   }
   onTabsChanged: if (tabs.indexOf(tab) === -1) tab = "HOME"
 
@@ -106,8 +117,8 @@ Panel {
     for (var i = 0; i < enabledHomeTiles.length; i++) {
       var tile = Model.homeTileByKey(enabledHomeTiles[i])
       if (!tile) continue
-      if (tile.key === "gpu" && Service.gpus.length === 0) continue
-      if (tile.key === "bat" && Service.batteries.length === 0) continue
+      if (tile.key === "gpu" && !hasGpu) continue
+      if (tile.key === "bat" && !hasBattery) continue
       rows.push(tile)
     }
     return rows
@@ -117,8 +128,8 @@ Panel {
     var rows = []
     for (var i = 0; i < Model.HOME_TILES.length; i++) {
       var tile = Model.HOME_TILES[i]
-      if (tile.key === "gpu" && Service.gpus.length === 0) continue
-      if (tile.key === "bat" && Service.batteries.length === 0) continue
+      if (tile.key === "gpu" && !hasGpu) continue
+      if (tile.key === "bat" && !hasBattery) continue
       rows.push(tile)
     }
     return rows
@@ -198,10 +209,10 @@ Panel {
     var lastGroup = ""
     for (var i = 0; i < Model.ALERT_SETTINGS.length; i++) {
       var entry = Model.ALERT_SETTINGS[i]
-      if ((entry.key === "gpu" || entry.key === "gputemp" || entry.key === "vram") && Service.gpus.length === 0) continue
-      if (entry.key === "bat" && Service.batteries.length === 0) continue
-      if (entry.key === "drivetemp" && !Service.driveTemp) continue
-      if (entry.key === "drivehealth" && Service.driveHealth.length === 0) continue
+      if ((entry.key === "gpu" || entry.key === "gputemp" || entry.key === "vram") && !hasGpu) continue
+      if (entry.key === "bat" && !hasBattery) continue
+      if (entry.key === "drivetemp" && !hasDriveTemp) continue
+      if (entry.key === "drivehealth" && !hasDriveHealth) continue
       rows.push({ entry: entry, header: entry.group !== lastGroup ? entry.group : "" })
       lastGroup = entry.group
     }
@@ -301,7 +312,7 @@ Panel {
   property int refreshPulse: 0
 
   function refreshNow() {
-    Service.refresh()
+    Service.refresh(true)
     refreshPulse++
   }
 
@@ -417,7 +428,7 @@ Panel {
     for (i = 0; i < Model.METRICS.length; i++) {
       var metric = Model.METRICS[i]
       if (shownKeys.indexOf(metric.key) !== -1) continue
-      if (metric.key === "bat" && Service.batteries.length === 0) continue
+      if (metric.key === "bat" && !hasBattery) continue
       rows.push(metric)
     }
     return rows
@@ -2876,7 +2887,7 @@ Panel {
       Timer {
         id: killRefresh
         interval: 700
-        onTriggered: Service.refresh()
+        onTriggered: Service.refresh(true)
       }
     }
   }
@@ -3115,15 +3126,22 @@ Panel {
       color: Qt.alpha(root.foreground, 0.18)
     }
 
+    // Constant-count model: a fresh values array arrives every tick, and
+    // a Repeater keyed on it would destroy and recreate all 60 bars each
+    // time. With a fixed count the delegates are built once and only
+    // their height/color bindings move.
     Repeater {
-      model: spark.values
+      model: Model.HISTORY_LEN
 
       Rectangle {
         required property int index
-        required property real modelData
-        readonly property real fraction: Math.max(0, Math.min(1, modelData / spark.peak))
+        // Right-aligned: the last value fills the last slot; slots before
+        // the series started stay empty.
+        readonly property int vIndex: index - (Model.HISTORY_LEN - spark.values.length)
+        readonly property real value: vIndex >= 0 ? spark.values[vIndex] : 0
+        readonly property real fraction: Math.max(0, Math.min(1, value / spark.peak))
         readonly property real rawHeight: (spark.height - 2) * fraction
-        x: spark.width - (spark.values.length - index) * spark.slot
+        x: index * spark.slot
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 1
         width: Math.max(1, spark.slot - 1)

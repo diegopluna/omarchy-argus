@@ -283,10 +283,15 @@ draw comes from amdgpu's hwmon `power1_average` and nvidia-smi's
 `power.draw`. Usage deltas are computed in QML.
 
 The SETUP tab shows what sampling actually costs (wall clock per tick,
-measured, not promised). The shell never blocks on it, and most of the
-wall time is the hwmon sensor bus itself — Super I/O chips take
-milliseconds per reading in the kernel — while the sampler's own CPU
-cost is ~10ms per tick (values are read with zero-fork bash builtins).
+measured, not promised). The shell never blocks on it, and the sampler's
+own CPU cost is ~10ms per tick (values are read with zero-fork bash
+builtins). The dominant wall cost turned out to be NVMe temperature
+reads — an admin command a drive can take ~75ms to answer, which also
+keeps it awake — so temperatures and fans sample every third tick with
+the last readings replayed between (panel opens and manual refreshes
+always sample everything), the full process table ships only while the
+PROC tab is watched, and interface identity refreshes every fifth panel
+tick. A throttled tick costs ~6ms of wall time.
 
 ## Contributing a hardware fixture
 

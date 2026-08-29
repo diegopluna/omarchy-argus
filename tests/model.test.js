@@ -43,6 +43,27 @@ assert.ok(dynamicOnly.cpus.length > 1, "dynamic half carries the stats")
 assert.strictEqual(dynamicOnly.psCpu.length, 0, "processes skipped while no panel is open")
 const panelText = execSync("bash " + script + " dynamic panel").toString()
 assert.ok(Model.parseSample(panelText).psCpu.length > 0, "processes sampled with the panel flag")
+assert.ok(Model.parseSample(panelText).psAll.length <= 60, "panel ships the top 60 by default")
+assert.ok(Model.parseSample(execSync("bash " + script + " dynamic panel procs").toString()).psAll.length > 60,
+  "procs flag ships the full table")
+
+// The shell parses the static half once and hands it back as context, so
+// dynamic ticks parse alone but keep the identity fields.
+const staticCtx = Model.parseSample(staticText)
+const ctxMerged = Model.parseSample(dynamicText, staticCtx)
+assert.strictEqual(ctxMerged.host, sample.host, "host from context")
+assert.strictEqual(ctxMerged.cpuName, sample.cpuName)
+assert.strictEqual(ctxMerged.cpuTopo, staticCtx.cpuTopo, "topology is the same object, not a re-parse")
+assert.ok(Object.keys(ctxMerged.diskModels).length > 0, "disk models from context")
+if (!CI) assert.ok(ctxMerged.disks.some(d => d.model !== ""), "dynamic disks still get their models")
+
+// The fast tick skips the sensor bus entirely; the shell replays the
+// last temperatures between full ticks.
+const fastText = execSync("bash " + script + " dynamic fast").toString()
+const fastParsed = Model.parseSample(fastText, staticCtx)
+assert.strictEqual(fastParsed.temps.length, 0, "fast tick carries no temps")
+assert.strictEqual(fastParsed.fans.length, 0)
+assert.ok(fastParsed.cpus.length > 1, "fast tick still carries the stats")
 
 // Second sample for deltas.
 const text2 = execSync("bash " + script).toString()

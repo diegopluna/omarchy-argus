@@ -35,7 +35,7 @@ Singleton {
 
   function panelOpened() {
     _panelRefs++
-    refresh()
+    refresh(true)
     if (!healthProc.running) healthProc.running = true
   }
 
@@ -46,6 +46,14 @@ Singleton {
   // Raw parsed sample plus previous tick for delta metrics.
   property var sample: null
   property string _staticText: ""
+  // The static half parsed exactly once; every dynamic tick parses its
+  // own text alone and takes identity from here.
+  property var _staticParsed: null
+  // Tick counter driving the sampler's cadence flags: temperatures every
+  // third tick (an NVMe temp read can take ~75ms and wakes the drive),
+  // interface identity every fifth panel tick.
+  property int _tickCount: 0
+  property var _dynArgs: []
   property var _prevCpus: null
   property var _prevNet: null
   property var _prevIo: null
@@ -171,12 +179,23 @@ Singleton {
   property double lastSampleMs: 0
   property double avgSampleMs: 0
 
-  function refresh() {
+  // force skips the cadence throttles — panel opens and user-triggered
+  // refreshes should never show stale temperatures.
+  function refresh(force) {
     if (_staticText === "") {
       if (!staticProc.running) staticProc.running = true
       return
     }
     if (!proc.running) {
+      _tickCount++
+      var args = []
+      if (!force && _tickCount % 3 !== 1) args.push("fast")
+      if (panelActive) {
+        args.push("panel")
+        if (lastTab === "PROC") args.push("procs")
+        if (force || _tickCount % 5 === 1 || Object.keys(netInfo).length === 0) args.push("netinfo")
+      }
+      _dynArgs = args
       _sampleStartedAt = Date.now()
       proc.running = true
     }
@@ -184,7 +203,8 @@ Singleton {
 
   function apply(text) {
     var now = Date.now()
-    var parsed = Model.parseSample(_staticText + "\n" + text)
+    if (_staticParsed === null) _staticParsed = Model.parseSample(_staticText)
+    var parsed = Model.parseSample(text, _staticParsed)
     if (parsed.cpus.length === 0) return
     var hadPrev = _prevCpus !== null
 
@@ -217,7 +237,6 @@ Singleton {
     kernel = parsed.kernel
     chassisType = parsed.chassisType
     psi = parsed.psi
-    driveTemp = Model.hottestDrive(parsed.temps)
     cpuMhz = parsed.load.cpuMhz
     load1 = parsed.load.load1
     load5 = parsed.load.load5
@@ -228,11 +247,15 @@ Singleton {
     swapTotal = parsed.mem.swapTotal
     swapUsed = parsed.mem.swapTotal - parsed.mem.swapFree
     disks = parsed.disks
-    temps = parsed.temps
-    fans = parsed.fans
+    // Fast ticks skip the sensor bus; keep the last readings between.
+    if (parsed.temps.length > 0) {
+      temps = parsed.temps
+      fans = parsed.fans
+      driveTemp = Model.hottestDrive(parsed.temps)
+    }
     memInfo = parsed.mem
     swaps = parsed.swaps
-    cpuTopo = parsed.cpuTopo
+    if (cpuTopo.length === 0 && parsed.cpuTopo.length > 0) cpuTopo = parsed.cpuTopo
     cpuFreq = parsed.cpuFreq
     // Process lists and interface identity are panel-only samples; keep
     // the last snapshot while the panel is closed instead of blanking.
@@ -240,7 +263,7 @@ Singleton {
     if (parsed.psMem.length > 0) psMem = parsed.psMem
     if (parsed.psAll.length > 0) psAll = parsed.psAll
     if (Object.keys(parsed.netInfo).length > 0) netInfo = parsed.netInfo
-    gpuPdev = parsed.gpuPdev
+    if (gpuPdev !== parsed.gpuPdev) gpuPdev = parsed.gpuPdev
     if (parsed.gpuProcs.length > 0) {
       var gpuElapsed = _prevGpuProcAt > 0 ? (now - _prevGpuProcAt) / 1000 : 0
       gpuProcs = Model.gpuProcRates(_prevGpuProc, parsed.gpuProcs, gpuElapsed)
@@ -263,7 +286,7 @@ Singleton {
     }
     gpus = allGpus
     primaryGpu = Model.primaryGpu(allGpus)
-    cpuTempC = Model.cpuTemp(parsed.temps)
+    if (parsed.temps.length > 0) cpuTempC = Model.cpuTemp(parsed.temps)
 
     // RAPL watts from cumulative-energy deltas, session energy, and the
     // draw fine rings — before the history push below, so this tick's
@@ -569,9 +592,9 @@ Singleton {
 
   Process {
     id: proc
-    command: root.panelActive
-      ? ["bash", root.scriptPath, "dynamic", "panel"]
-      : ["bash", root.scriptPath, "dynamic"]
+    // Flags computed per tick in refresh(): cadence throttles (fast /
+    // netinfo) and the PROC-tab-only full process table.
+    command: ["bash", root.scriptPath, "dynamic"].concat(root._dynArgs)
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.apply(text)

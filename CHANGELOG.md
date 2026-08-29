@@ -4,6 +4,33 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] — 2026-08-29
+
+### Changed
+- Profiling found the sampler's real cost: not the Super I/O chip the
+  docs blamed (13 sensors in 3ms), but a single NVMe drive taking ~75ms
+  to answer its temperature — an admin command that also keeps the
+  drive awake. Temperatures and fans now sample every third tick, with
+  the last readings replayed between; a fast tick is ~6ms of wall time
+  instead of ~135ms (measured), and panel opens or manual refreshes
+  always sample everything.
+- The static half of the sample (models, GPU names, topology) is parsed
+  once at startup instead of being re-parsed inside every tick, and
+  static-derived state no longer reassigns per tick — the CPU core grid
+  and friends stop rebuilding for data that cannot change.
+- Sparklines stopped churning the scene graph: a fixed-count Repeater
+  updates 60 bars in place instead of destroying and recreating them on
+  every tick (the HOME tab alone was cycling ~400 items every 2s).
+  Tab, tile, and alert row models now hang off stable booleans, so
+  per-tick data arrays no longer rebuild their delegates.
+- The full process table ships only while the PROC tab is watched
+  (fetched immediately on switching to it); other panel ticks carry the
+  CPU-sorted top 60. Interface identity (IP/SSID) refreshes every fifth
+  panel tick instead of every tick.
+- Net effect, measured on the reference machine: idle sampling cost
+  dropped from ~135ms to ~40ms average wall per tick, and the polled
+  NVMe gets to sleep between full ticks.
+
 ## [1.0.1] — 2026-08-29
 
 ### Security

@@ -99,7 +99,12 @@ function thresholdsFrom(settings) {
 
 // ---- Sample parsing ------------------------------------------------------
 
-function parseSample(text) {
+// Parse one sampler emission. `staticCtx` — a previously parsed static
+// sample — supplies the identity fields (host, models, GPU names,
+// topology) so the per-tick dynamic text is parsed alone instead of
+// re-parsing the concatenated static half every tick; without it,
+// identity comes from the text itself (tests, fixtures, one-shots).
+function parseSample(text, staticCtx) {
   var sections = {}
   var current = null
   var lines = String(text || "").split("\n")
@@ -112,20 +117,20 @@ function parseSample(text) {
       sections[current].push(line)
     }
   }
-  var diskModels = parseDiskNames(sections.DISKNAMES || [])
-  var diskLinks = parseDiskLinks(sections.DISKLINKS || [])
-  var gpuNames = parseGpuNames(sections.GPUNAMES || [])
-  var gpuPdev = parseGpuPdev(sections.GPUPDEV || [])
+  var diskModels = staticCtx ? staticCtx.diskModels : parseDiskNames(sections.DISKNAMES || [])
+  var diskLinks = staticCtx ? staticCtx.diskLinks : parseDiskLinks(sections.DISKLINKS || [])
+  var gpuNames = staticCtx ? staticCtx.gpuNames : parseGpuNames(sections.GPUNAMES || [])
+  var gpuPdev = staticCtx ? staticCtx.gpuPdev : parseGpuPdev(sections.GPUPDEV || [])
   var nvidiaLines = sections.NVIDIA || []
   var nvidiaSuspended = nvidiaLines.length > 0 && nvidiaLines[0].trim() === "suspended"
   // 0.10 samples one full PS table; pre-0.10 captures carry the two
   // top-10 sections instead — accept either.
   var psAll = parsePs(sections.PS || [])
   return {
-    host: (sections.HOST || [""])[0].trim(),
-    cpuName: (sections.CPUNAME || [""])[0].trim(),
-    kernel: (sections.KERNEL || [""])[0].trim(),
-    chassisType: Number((sections.CHASSIS || [""])[0]) || 0,
+    host: staticCtx ? staticCtx.host : (sections.HOST || [""])[0].trim(),
+    cpuName: staticCtx ? staticCtx.cpuName : (sections.CPUNAME || [""])[0].trim(),
+    kernel: staticCtx ? staticCtx.kernel : (sections.KERNEL || [""])[0].trim(),
+    chassisType: staticCtx ? staticCtx.chassisType : Number((sections.CHASSIS || [""])[0]) || 0,
     cpus: parseStat(sections.STAT || []),
     mem: parseMem(sections.MEM || []),
     load: parseLoad(sections.LOAD || []),
@@ -148,7 +153,7 @@ function parseSample(text) {
     swaps: parseSwaps(sections.SWAPS || []),
     power: parseRapl(sections.POWER || []),
     netInfo: parseNetInfo(sections.NETINFO || []),
-    cpuTopo: parseCpuTopo(sections.CPUTOPO || []),
+    cpuTopo: staticCtx ? staticCtx.cpuTopo : parseCpuTopo(sections.CPUTOPO || []),
     cpuFreq: parseCpuFreq(sections.CPUFREQ || []),
     gpuPdev: gpuPdev,
     gpuProcs: parseGpuProc(sections.GPUPROC || []),

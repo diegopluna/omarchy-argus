@@ -1,20 +1,43 @@
 #!/usr/bin/env bash
 # Emits one system sample as sectioned plain text; parsed by Model.js.
 #
-# Usage: sample.sh [static|dynamic [panel]|ps|health]
+# Usage: sample.sh [static|dynamic [flags...]|ps|health]
 #   static  — hardware identity that never changes while the shell runs
 #             (hostname, CPU model, disk models/topology, GPU names)
-#   dynamic — everything that moves; sampled every tick. With the extra
-#             "panel" argument, also emits the sections only the open panel
-#             displays (top processes, per-process GPU clients).
-#   ps      — just the top-process sections; a one-shot the alert path runs
+#   dynamic — everything that moves; sampled every tick. Flags:
+#               panel   — also emit the sections only the open panel
+#                         displays (top processes, per-process GPU clients)
+#               fast    — skip TEMP/FAN. Temperatures move on seconds, and
+#                         an NVMe temp read is an admin command the drive
+#                         can take ~75ms to answer (and it keeps the drive
+#                         awake) — so the shell samples them every third
+#                         tick and replays the last values between.
+#               procs   — the full process table instead of the top 60
+#                         (only the PROC tab needs all of it)
+#               netinfo — interface IP/SSID identity (changes rarely; the
+#                         shell asks every fifth panel tick)
+#   ps      — just the top-process section; a one-shot the alert path runs
 #             to attribute a fired alert while no panel is open.
 #   health  — drive SMART health via udisks2 (no root needed); sampled at
 #             startup and on panel open — wear moves in weeks, not ticks.
 #   (none)  — everything, for tests and one-shot use
 
 mode="${1:-all}"
-panel="${2:-}"
+panel=""
+fast=""
+procs=""
+netinfo=""
+for arg in "${@:2}"; do
+  case "$arg" in
+    panel) panel="panel" ;;
+    fast) fast="fast" ;;
+    procs) procs="procs" ;;
+    netinfo) netinfo="netinfo" ;;
+  esac
+done
+if [ "$mode" = "all" ]; then
+  panel="panel"; procs="procs"; netinfo="netinfo"
+fi
 
 # Zero-fork one-line file read into $REPLY (sysfs/proc values). A `cat`
 # per value looks harmless but forks; the sensor loops read dozens of
@@ -32,12 +55,18 @@ rtrim() {
 }
 
 emit_ps() {
-  # The full process table, one ps call; the model sorts/filters/caps it.
+  # The process table, one ps call; the model sorts/filters/caps it.
   # args= instead of comm=: comm truncates at 15 chars ("Isolated Web Co");
   # cut keeps browser-length command lines bounded. user:16 fixed-width so
-  # spaces in args stay unambiguous; nlwp is the thread count.
+  # spaces in args stay unambiguous; nlwp is the thread count. The full
+  # table ships only when the PROC tab is watching; the CPU-sorted top 60
+  # covers Home, attribution, and the kept-last preview.
   echo '###PS'
-  ps axo pid=,user:16=,pcpu=,pmem=,nlwp=,args= --sort=-pcpu 2>/dev/null | cut -c1-170
+  if [ "$1" = "full" ]; then
+    ps axo pid=,user:16=,pcpu=,pmem=,nlwp=,args= --sort=-pcpu 2>/dev/null | cut -c1-170
+  else
+    ps axo pid=,user:16=,pcpu=,pmem=,nlwp=,args= --sort=-pcpu 2>/dev/null | head -n 60 | cut -c1-170
+  fi
 }
 
 if [ "$mode" = "ps" ]; then
@@ -201,6 +230,7 @@ done
 echo '###DISKSTATS'
 cat /proc/diskstats 2>/dev/null
 
+if [ "$fast" != "fast" ]; then
 echo '###TEMP'
 for h in /sys/class/hwmon/hwmon*; do
   rline "$h/name" || continue
@@ -237,6 +267,7 @@ for h in /sys/class/hwmon/hwmon*; do
     echo "$name|$label|$value|$device"
   done
 done
+fi
 
 echo '###GPU'
 for c in /sys/class/drm/card[0-9] /sys/class/drm/card[0-9][0-9]; do
@@ -322,12 +353,13 @@ fi
 
 # Top processes are only visible in the open panel; skip them on the
 # always-on bar tick.
-if [ "$mode" = "all" ] || [ "$panel" = "panel" ]; then
-  emit_ps
+if [ "$panel" = "panel" ]; then
+  if [ "$procs" = "procs" ]; then emit_ps full; else emit_ps; fi
 
   # Interface identity for the NET tab: kind, IPv4, and Wi-Fi SSID.
-  # Panel-only — the bar needs rates, not addresses. SSID last so a "|"
-  # in a network name can't shift the other fields.
+  # Panel-only and throttled — the bar needs rates, not addresses. SSID
+  # last so a "|" in a network name can't shift the other fields.
+  if [ "$netinfo" = "netinfo" ]; then
   echo '###NETINFO'
   for n in /sys/class/net/*; do
     i=${n##*/}
@@ -342,6 +374,7 @@ if [ "$mode" = "all" ] || [ "$panel" = "panel" ]; then
     fi
     echo "$i|$kind|$addr|$ssid"
   done
+  fi
 
   # Per-process GPU clients from DRM fdinfo (amdgpu, i915/xe, nouveau —
   # any driver that implements the drm-usage-stats spec). One gawk pass
