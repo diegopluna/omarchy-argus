@@ -129,6 +129,29 @@ assert.strictEqual(nvSample.gpus[0].powerW, 12, "amdgpu power µW → W")
 assert.strictEqual(nvSample.gpus[1].label, "GPU 0 (NVIDIA)")
 assert.strictEqual(nvSample.gpus[1].powerW, 45.2)
 
+// APU memory pool: an iGPU's mem_info_vram_total is only the BIOS
+// carve-out; its real ceiling adds GTT (shared system RAM). dGPUs keep
+// plain VRAM, and pre-0.9.0 captures without the GTT fields still parse.
+const apuSample = Model.parseSample(
+  "###GPU\n0|5|268435456|536870912|48000|12000000|4294967296|16389763072|1\n" +
+  "1|25|1073741824|17095983104|52000|220000000|97386496|16389763072|0")
+assert.strictEqual(apuSample.gpus[0].apu, true)
+assert.strictEqual(apuSample.gpus[0].gttTotal, 16389763072)
+assert.strictEqual(apuSample.gpus[1].apu, false, "dGPU with mem_busy_percent")
+assert.strictEqual(Model.gpuMemUsed(apuSample.gpus[0]), 268435456 + 4294967296, "APU pool adds GTT")
+assert.strictEqual(Model.gpuMemTotal(apuSample.gpus[0]), 536870912 + 16389763072)
+assert.strictEqual(Model.gpuMemUsed(apuSample.gpus[1]), 1073741824, "dGPU pool is VRAM alone")
+assert.strictEqual(Model.gpuMemTotal(apuSample.gpus[1]), 17095983104)
+assert.strictEqual(Model.metricValue("vram", { gpu: apuSample.gpus[0] }), "27%", "bar vram uses the pool")
+assert.strictEqual(Model.metricUrgent("vram", { gpu: apuSample.gpus[0] }, Model.thresholdsFrom({ urgentVramPct: 25 })), true)
+const oldFormat = Model.parseSample("###GPU\n0|25|100|200|48000|12000000").gpus[0]
+assert.strictEqual(oldFormat.apu, false)
+assert.strictEqual(oldFormat.gttTotal, 0)
+assert.strictEqual(Model.gpuMemTotal(oldFormat), 200)
+// Primary ranking stays on dedicated VRAM: a 2-CU iGPU's RAM-sized GTT
+// must not outrank a real dGPU.
+assert.strictEqual(Model.primaryGpu(apuSample.gpus).card, "1")
+
 // Runtime-suspended NVIDIA: sampler emits "suspended"; last-known values
 // replay as an asleep card that renders nothing in the bar.
 const suspended = Model.parseSample("###GPU\n###NVIDIA\nsuspended")
@@ -229,6 +252,82 @@ assert.strictEqual(Model.metricUrgent("cpu", { cpuPct: 85 }, th), true)
 assert.strictEqual(Model.metricUrgent("cpu", { cpuPct: 85 }, null), false, "default threshold is 90")
 assert.strictEqual(Model.metricUrgent("load", { load1: 17, cores: 16 }, null), true)
 assert.strictEqual(Model.metricUrgent("load", { load1: 3, cores: 16 }, null), false)
+
+// GPU/VRAM split off from the shared CPU/RAM values in 0.9.0; the old
+// shared settings still cover them until their own are set.
+assert.strictEqual(Model.thresholdsFrom({}).gpuPct, 90)
+assert.strictEqual(Model.thresholdsFrom({ urgentCpuPct: 70 }).gpuPct, 70, "urgentCpuPct still covers gpu")
+assert.strictEqual(Model.thresholdsFrom({ urgentCpuPct: 70, urgentGpuPct: 95 }).gpuPct, 95, "specific beats shared")
+assert.strictEqual(Model.thresholdsFrom({ urgentMemPct: 60 }).vramPct, 60)
+assert.strictEqual(Model.thresholdsFrom({ urgentVramPct: 85 }).vramPct, 85)
+assert.strictEqual(Model.metricUrgent("gpu", { gpu: { busy: 96, celsius: 50 } }, Model.thresholdsFrom({ urgentGpuPct: 95 })), true)
+assert.strictEqual(Model.metricUrgent("gpu", { gpu: { busy: 94, celsius: 50 } }, Model.thresholdsFrom({ urgentGpuPct: 95 })), false)
+
+// Battery low and drive wear — hardcoded before 0.9.0 — are settings now.
+assert.strictEqual(Model.thresholdsFrom({}).batPct, 15)
+assert.strictEqual(Model.thresholdsFrom({}).wearPct, 90)
+const batTh = Model.thresholdsFrom({ urgentBatPct: 30 })
+assert.strictEqual(Model.metricUrgent("bat", { battery: { charging: false, pct: 25 } }, batTh), true, "custom low threshold")
+assert.strictEqual(Model.metricUrgent("bat", { battery: { charging: false, pct: 25 } }, null), false, "default stays 15")
+assert.ok(Model.alertText("bat", { battery: { pct: 25 } }, batTh).includes("threshold 30%"))
+
+// Per-metric alert opt-in: off by default, list round-trips, unknown keys
+// dropped.
+assert.deepStrictEqual(Model.normalizeAlertsOn(null), [], "alerts off by default")
+assert.deepStrictEqual(Model.normalizeAlertsOn(["cpu", "cpu", "bogus", "bat"]), ["cpu", "bat"])
+let alertsOn = Model.toggleAlertOn(null, "cputemp")
+assert.deepStrictEqual(alertsOn, ["cputemp"])
+alertsOn = Model.toggleAlertOn(alertsOn, "drivehealth")
+assert.strictEqual(alertsOn.length, 2)
+assert.deepStrictEqual(Model.toggleAlertOn(alertsOn, "cputemp"), ["drivehealth"])
+assert.deepStrictEqual(Model.toggleAlertOn([], "nonsense"), [], "unknown keys don't toggle on")
+assert.strictEqual(Model.ALERT_SETTINGS.length, Model.ALERT_KEYS.length + 1, "every tick alert + drivehealth")
+Model.ALERT_KEYS.forEach(k => assert.ok(Model.alertSettingByKey(k), "alert setting for " + k))
+Model.ALERT_SETTINGS.forEach(a =>
+  assert.ok(isFinite(Model.thresholdsFrom({})[a.thKey]), "thresholdsFrom resolves " + a.thKey))
+// Groups drive the ALERTS-tab section headers, so every entry needs one
+// and entries sharing a group must be contiguous.
+{
+  const seen = []
+  for (const a of Model.ALERT_SETTINGS) {
+    assert.ok(typeof a.group === "string" && a.group.length > 0, a.key + " has a group")
+    if (seen[seen.length - 1] !== a.group) {
+      assert.ok(!seen.includes(a.group), "group " + a.group + " is contiguous")
+      seen.push(a.group)
+    }
+  }
+}
+
+// GPU-tab display order: primary card first, the rest in card order.
+const ordered = Model.primaryFirstGpus(apuSample.gpus)
+assert.strictEqual(ordered[0].card, "1", "primary (most dedicated VRAM) leads")
+assert.strictEqual(ordered[1].card, "0")
+assert.strictEqual(ordered.length, apuSample.gpus.length)
+assert.deepStrictEqual(Model.primaryFirstGpus([]), [], "no GPUs, no reorder")
+
+// Alert rows show the live reading the alert watches; unavailable
+// readings (asleep GPU, no drive sensor) render nothing.
+const nowData = { cpuPct: 43.2, cpuTemp: 61, memPct: 55, gpu: apuSample.gpus[0], disk: { used: 50, size: 100 }, driveTemp: hotDrive, battery: summary }
+assert.strictEqual(Model.alertNowText(Model.alertSettingByKey("cpu"), nowData), "43%")
+assert.strictEqual(Model.alertNowText(Model.alertSettingByKey("cputemp"), nowData), "61°")
+assert.strictEqual(Model.alertNowText(Model.alertSettingByKey("vram"), nowData), "27%", "APU pool feeds the vram reading")
+assert.strictEqual(Model.alertNowText(Model.alertSettingByKey("drivetemp"), nowData), "72°")
+assert.strictEqual(Model.alertNowText(Model.alertSettingByKey("bat"), nowData), "76%")
+assert.strictEqual(Model.alertNowText(Model.alertSettingByKey("gputemp"), { gpu: Model.markGpuAsleep(nv[0]) }), "", "asleep GPU reads nothing")
+assert.strictEqual(Model.alertNowText(Model.alertSettingByKey("drivetemp"), { driveTemp: null }), "")
+const nowHealth = Model.parseDriveHealth(["nvme2n1|nvme|A|10||9|0|0|0|0", "nvme1n1|nvme|B|10||91|0|0|0|0"])
+assert.strictEqual(Model.alertNowText(Model.alertSettingByKey("drivehealth"), {}, nowHealth), "91%", "worst drive wear")
+assert.strictEqual(Model.alertNowText(Model.alertSettingByKey("drivehealth"), {}, []), "")
+
+// Threshold steppers clamp to each alert's bounds.
+const cpuEntry = Model.alertSettingByKey("cpu")
+assert.strictEqual(Model.stepAlertThreshold(cpuEntry, 90, 1), 95)
+assert.strictEqual(Model.stepAlertThreshold(cpuEntry, 100, 1), 100, "clamped at max")
+assert.strictEqual(Model.stepAlertThreshold(cpuEntry, 50, -1), 50, "clamped at min")
+assert.strictEqual(Model.stepAlertThreshold(cpuEntry, NaN, 1), 95, "NaN falls back to the default")
+assert.strictEqual(Model.alertLimitText(cpuEntry, Model.thresholdsFrom({})), "≥ 90%")
+assert.strictEqual(Model.alertLimitText(Model.alertSettingByKey("bat"), Model.thresholdsFrom({})), "≤ 15%")
+assert.strictEqual(Model.alertLimitText(Model.alertSettingByKey("drivehealth"), null), "≥ 90% worn")
 const segs = Model.barSegments(["cpu", "ram"], { cpuPct: 95, memPct: 20 }, null)
 assert.strictEqual(segs.length, 2)
 assert.strictEqual(segs[0].urgent, true)
@@ -486,6 +585,8 @@ assert.ok(Model.fmtDriveHealth(health[1]).includes("spare-low"))
 assert.ok(Model.fmtDriveHealth(health[2]).includes("failing"))
 const mediaErr = Model.parseDriveHealth(["nvme0n1|nvme|X|10||5|0|0|2|0"])[0]
 assert.strictEqual(Model.driveHealthBad(mediaErr), true, "media errors are bad")
+assert.strictEqual(Model.driveHealthBad(health[0], 5), true, "worn 9% trips a 5% wear alarm")
+assert.strictEqual(Model.driveHealthBad(health[1], 95), true, "critical warning trips at any wear level")
 assert.ok(Model.fmtDriveHealth(mediaErr).includes("2 media errors"))
 // The live health mode parses (may be empty where udisks2 is absent — CI).
 const liveHealth = Model.parseSample(execSync("bash " + script + " health").toString())

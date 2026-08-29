@@ -66,6 +66,7 @@ Panel {
   readonly property var tabs: {
     var t = ["CPU", "MEM", "GPU", "DISK", "NET", "PROC", "TEMP"]
     if (Service.batteries.length > 0) t.push("BAT")
+    t.push("ALERTS")
     t.push("BAR")
     return t
   }
@@ -79,11 +80,45 @@ Panel {
   onTabChanged: {
     flick.contentY = 0
     editingSensor = ""
+    editingAlert = ""
   }
   onTabsChanged: if (tabs.indexOf(tab) === -1) tab = "CPU"
 
   // Which TEMP-tab sensor row has its threshold editor expanded.
   property string editingSensor: ""
+  // Which BAR-tab alert row has its threshold editor expanded.
+  property string editingAlert: ""
+
+  // Alerts the user has opted into (all off by default); the BAR tab's
+  // toggles persist this list.
+  readonly property var enabledAlerts: Model.normalizeAlertsOn(setting("alertsOn", []))
+
+  // ALERTS-tab rows, minus hardware this machine doesn't have — a GPU
+  // alert on a GPU-less box could never fire. Each row is { entry,
+  // header }: header carries the group title on the group's first
+  // surviving row (USAGE / TEMPERATURE / HEALTH), "" otherwise.
+  readonly property var alertRows: {
+    var rows = []
+    var lastGroup = ""
+    for (var i = 0; i < Model.ALERT_SETTINGS.length; i++) {
+      var entry = Model.ALERT_SETTINGS[i]
+      if ((entry.key === "gpu" || entry.key === "gputemp" || entry.key === "vram") && Service.gpus.length === 0) continue
+      if (entry.key === "bat" && Service.batteries.length === 0) continue
+      if (entry.key === "drivetemp" && !Service.driveTemp) continue
+      if (entry.key === "drivehealth" && Service.driveHealth.length === 0) continue
+      rows.push({ entry: entry, header: entry.group !== lastGroup ? entry.group : "" })
+      lastGroup = entry.group
+    }
+    return rows
+  }
+
+  function toggleAlert(key) {
+    persistPluginSetting("alertsOn", Model.toggleAlertOn(setting("alertsOn", []), key))
+  }
+
+  function stepAlert(entry, delta) {
+    persistPluginSetting(entry.setting, Model.stepAlertThreshold(entry, thresholds[entry.thKey], delta))
+  }
   // Whether hidden sensor rows are temporarily revealed.
   property bool showHiddenSensors: false
   readonly property var hiddenSensors: Model.normalizeHiddenSensors(setting("hiddenSensors", []))
@@ -273,7 +308,11 @@ Panel {
         ioWriteBps: Service.ioWrite,
         psi: Service.psi,
         gpus: Service.gpus.map(function(g) {
-          return { label: g.label, name: g.name, busyPct: g.busy, tempC: g.celsius, vramUsed: g.vramUsed, vramTotal: g.vramTotal, powerW: g.powerW, asleep: g.asleep === true }
+          return { label: g.label, name: g.name, busyPct: g.busy, tempC: g.celsius,
+            vramUsed: g.vramUsed, vramTotal: g.vramTotal,
+            gttUsed: g.gttUsed || 0, gttTotal: g.gttTotal || 0, apu: g.apu === true,
+            memUsed: Model.gpuMemUsed(g), memTotal: Model.gpuMemTotal(g),
+            powerW: g.powerW, asleep: g.asleep === true }
         }),
         battery: Service.battery,
         disks: Service.disks.map(function(d) { return { mount: d.mount, used: d.used, size: d.size } }),
@@ -514,25 +553,30 @@ Panel {
           }
         }
 
-        ButtonGroup {
-          // Underlining each tab's first letter advertises the letter-jump
-          // hotkey; the leading tag also flips the label into styled text.
-          options: {
-            var opts = []
-            for (var i = 0; i < root.tabs.length; i++) {
-              var t = root.tabs[i]
-              opts.push({ value: t, label: "<u>" + t.charAt(0) + "</u>" + t.slice(1) })
-            }
-            return opts
-          }
-          value: root.tab
-          foreground: root.foreground
-          accent: Color.accent
-          fontFamily: root.fontFamily
-          fontSize: Style.font.bodySmall
-          focusable: false
+        // Tab selector: the same chips a ButtonGroup renders, but in a
+        // Flow — ten tabs no longer fit one row inside the panel, and a
+        // Row would overflow it, so a long tab set wraps instead.
+        // Underlining each tab's first letter advertises the letter-jump
+        // hotkey; the leading tag also flips the label into styled text.
+        Flow {
+          width: parent.width
           spacing: Style.space(4)
-          onChanged: function(value) { root.tab = value }
+
+          Repeater {
+            model: root.tabs
+
+            Button {
+              required property string modelData
+              text: "<u>" + modelData.charAt(0) + "</u>" + modelData.slice(1)
+              selected: root.tab === modelData
+              bordered: true
+              foreground: root.foreground
+              accent: Color.accent
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.tab = modelData
+            }
+          }
         }
       }
 
@@ -747,14 +791,20 @@ Panel {
             }
 
             Repeater {
-              model: Service.gpus
+              model: Model.primaryFirstGpus(Service.gpus)
 
               Column {
                 id: gpuBlock
                 required property var modelData
+                required property int index
                 readonly property bool isPrimary: Service.primaryGpu && Service.primaryGpu.card === modelData.card
                 width: parent.width
                 spacing: Style.space(6)
+
+                PanelSeparator {
+                  visible: gpuBlock.index > 0
+                  foreground: root.foreground
+                }
 
                 NameHeader {
                   title: gpuBlock.isPrimary && Service.gpus.length > 1
@@ -797,11 +847,22 @@ Panel {
                   visible: gpuBlock.isPrimary && !modelData.asleep && isFinite(modelData.busy)
                 }
 
+                // An APU's "VRAM" is only the BIOS carve-out; its real
+                // ceiling adds GTT (shared system RAM), so meter the pool
+                // and break down where it comes from.
                 MeterRow {
-                  visible: !modelData.asleep && modelData.vramTotal > 0
-                  label: "VRAM · " + Model.fmtBytes(modelData.vramUsed) + " of " + Model.fmtBytes(modelData.vramTotal)
-                  value: modelData.vramTotal > 0 ? Model.fmtPct(100 * modelData.vramUsed / modelData.vramTotal) : ""
-                  fraction: modelData.vramTotal > 0 ? modelData.vramUsed / modelData.vramTotal : 0
+                  visible: !modelData.asleep && Model.gpuMemTotal(modelData) > 0
+                  label: (modelData.apu ? "Memory · " : "VRAM · ")
+                    + Model.fmtBytes(Model.gpuMemUsed(modelData)) + " of " + Model.fmtBytes(Model.gpuMemTotal(modelData))
+                  value: Model.gpuMemTotal(modelData) > 0 ? Model.fmtPct(100 * Model.gpuMemUsed(modelData) / Model.gpuMemTotal(modelData)) : ""
+                  fraction: Model.gpuMemTotal(modelData) > 0 ? Model.gpuMemUsed(modelData) / Model.gpuMemTotal(modelData) : 0
+                }
+
+                DetailRow {
+                  label: "Shared with system RAM"
+                  value: modelData.apu === true
+                    ? Model.fmtBytes(modelData.vramTotal) + " reserved + " + Model.fmtBytes(modelData.gttTotal) + " GTT"
+                    : ""
                 }
 
                 DetailRow {
@@ -865,9 +926,16 @@ Panel {
               model: Service.disks
 
               Column {
+                id: diskBlock
                 required property var modelData
+                required property int index
                 width: parent.width
                 spacing: Style.space(6)
+
+                PanelSeparator {
+                  visible: diskBlock.index > 0
+                  foreground: root.foreground
+                }
 
                 NameHeader {
                   title: modelData.mount
@@ -951,7 +1019,7 @@ Panel {
                 required property var modelData
                 label: modelData.model !== "" ? modelData.model + " · " + modelData.dev : modelData.dev
                 value: Model.fmtDriveHealth(modelData)
-                urgent: Model.driveHealthBad(modelData)
+                urgent: Model.driveHealthBad(modelData, root.thresholds.wearPct)
               }
             }
           }
@@ -1292,11 +1360,17 @@ Panel {
               Column {
                 id: batteryBlock
                 required property var modelData
+                required property int index
                 readonly property real pct: modelData.energyFullWh > 0
                   ? 100 * modelData.energyNowWh / modelData.energyFullWh
                   : modelData.capacity
                 width: parent.width
                 spacing: Style.space(6)
+
+                PanelSeparator {
+                  visible: batteryBlock.index > 0
+                  foreground: root.foreground
+                }
 
                 NameHeader {
                   title: modelData.name.toUpperCase()
@@ -1434,8 +1508,174 @@ Panel {
               }
             }
 
+            Text {
+              visible: Service.avgSampleMs > 0
+              width: parent.width
+              text: "Argus's own cost: sampling takes ~" + Math.round(Service.avgSampleMs)
+                + " ms of each " + Service.intervalSec + "s tick (last " + Math.round(Service.lastSampleMs) + " ms)"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+              horizontalAlignment: Text.AlignHCenter
+            }
+
+            Text {
+              width: parent.width
+              text: "Bar order follows this list · segments turn urgent past the thresholds in the ALERTS tab"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+              horizontalAlignment: Text.AlignHCenter
+            }
+
+            Text {
+              width: parent.width
+              text: "Bar button — left: panel · middle: refresh · right: btop"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+              horizontalAlignment: Text.AlignHCenter
+            }
+          }
+
+          // ---- Alerts tab: per-metric opt-in toggles, thresholds, and the
+          // session's fired-alert log.
+          Column {
+            visible: root.tab === "ALERTS"
+            width: parent.width
+            spacing: Style.space(8)
+
+            // One row per alert, grouped under USAGE / TEMPERATURE /
+            // HEALTH headers: threshold caption, inline stepper, and the
+            // opt-in toggle. Everything is off by default — the threshold
+            // still colors bar segments urgent; the toggle adds the
+            // notification.
+            Repeater {
+              model: root.alertRows
+
+              Column {
+                id: alertRow
+                required property var modelData
+                readonly property var entry: modelData.entry
+                readonly property bool on: root.enabledAlerts.indexOf(entry.key) !== -1
+                readonly property real limit: root.thresholds[entry.thKey]
+                readonly property bool editing: root.editingAlert === entry.key
+                width: parent.width
+                spacing: Style.space(4)
+
+                PanelSectionHeader {
+                  visible: alertRow.modelData.header !== ""
+                  text: alertRow.modelData.header
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                }
+
+                RowLayout {
+                  width: parent.width
+                  spacing: Style.space(8)
+
+                  Text {
+                    Layout.fillWidth: true
+                    text: alertRow.entry.label
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    elide: Text.ElideRight
+                  }
+
+                  // The live reading beside the threshold, so the stepper
+                  // is set against reality instead of blind.
+                  Text {
+                    readonly property string now: Model.alertNowText(alertRow.entry, Service.barData, Service.driveHealth)
+                    visible: now !== ""
+                    text: "now " + now
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+
+                  Text {
+                    text: Model.alertLimitText(alertRow.entry, root.thresholds)
+                    color: alertRow.on ? Color.accent : root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+
+                  PanelActionButton {
+                    iconText: "\u{f009a}"
+                    tooltipText: "Edit threshold"
+                    foreground: alertRow.editing ? Color.accent : root.dim
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.bodySmall
+                    size: Style.space(22)
+                    onClicked: root.editingAlert = alertRow.editing ? "" : alertRow.entry.key
+                  }
+
+                  ToggleSwitch {
+                    checked: alertRow.on
+                    foreground: root.foreground
+                    accent: Color.accent
+                    onToggled: root.toggleAlert(alertRow.entry.key)
+                  }
+                }
+
+                RowLayout {
+                  visible: alertRow.editing
+                  anchors.right: parent.right
+                  spacing: Style.space(6)
+
+                  Text {
+                    text: (alertRow.entry.low ? "Alert below" : "Alert above")
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+
+                  PanelActionButton {
+                    iconText: "\u{f0374}"
+                    tooltipText: "-" + alertRow.entry.step
+                    enabled: alertRow.limit > alertRow.entry.min
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.bodySmall
+                    size: Style.space(22)
+                    onClicked: root.stepAlert(alertRow.entry, -1)
+                  }
+
+                  Text {
+                    text: alertRow.limit + alertRow.entry.unit
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                  }
+
+                  PanelActionButton {
+                    iconText: "\u{f0415}"
+                    tooltipText: "+" + alertRow.entry.step
+                    enabled: alertRow.limit < alertRow.entry.max
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.bodySmall
+                    size: Style.space(22)
+                    onClicked: root.stepAlert(alertRow.entry, 1)
+                  }
+                }
+              }
+            }
+
+            Text {
+              width: parent.width
+              text: "Alerts are off by default. A toggled-on alert notifies after its metric stays past the threshold for 3 ticks (5-minute cooldown). Thresholds color bar segments urgent whether or not the alert is on."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
             PanelSectionHeader {
-              visible: Service.alertLog.length > 0
               text: "RECENT ALERTS"
               foreground: root.foreground
               fontFamily: root.fontFamily
@@ -1457,34 +1697,12 @@ Panel {
             }
 
             Text {
-              visible: Service.avgSampleMs > 0
+              visible: Service.alertLog.length === 0
               width: parent.width
-              text: "Argus's own cost: sampling takes ~" + Math.round(Service.avgSampleMs)
-                + " ms of each " + Service.intervalSec + "s tick (last " + Math.round(Service.lastSampleMs) + " ms)"
+              text: "No alerts have fired this session."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
-              horizontalAlignment: Text.AlignHCenter
-            }
-
-            Text {
-              width: parent.width
-              text: "Bar order follows this list · segments turn " + "urgent past thresholds (see plugin settings)"
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
-              horizontalAlignment: Text.AlignHCenter
-            }
-
-            Text {
-              width: parent.width
-              text: "Bar button — left: panel · middle: refresh · right: btop"
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
               horizontalAlignment: Text.AlignHCenter
             }
           }

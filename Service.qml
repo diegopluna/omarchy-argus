@@ -263,10 +263,15 @@ Singleton {
   }
 
   // ---- Threshold alerts ----------------------------------------------
-  // When a metric stays past its threshold for alertHoldTicks consecutive
-  // ticks, send one desktop notification, then stay quiet for the
-  // cooldown. Temperatures and battery are critical; the rest normal.
+  // Alerts are per-metric opt-in: only keys in the user's `alertsOn` list
+  // (BAR tab toggles; empty by default) are watched. When an enabled
+  // metric stays past its threshold for alertHoldTicks consecutive ticks,
+  // send one desktop notification, then stay quiet for the cooldown.
+  // Temperatures and battery are critical; the rest normal. The `alerts`
+  // setting remains a master switch over everything, including the
+  // per-sensor TEMP-tab thresholds.
   readonly property bool alertsEnabled: !settings || settings.alerts !== "Off"
+  readonly property var enabledAlerts: Model.normalizeAlertsOn(settings ? settings.alertsOn : null)
   readonly property int alertHoldTicks: 3
   readonly property int alertCooldownMs: 300000
 
@@ -294,6 +299,9 @@ Singleton {
     var pending = []
     for (var i = 0; i < Model.ALERT_KEYS.length; i++) {
       var key = Model.ALERT_KEYS[i]
+      // Off-by-default: a disabled metric accumulates no streak, so
+      // toggling it on mid-breach still takes the full hold to fire.
+      if (enabledAlerts.indexOf(key) === -1) continue
       if (!_fired(key, Model.metricUrgent(key, data, th), now)) continue
       var critical = key === "cputemp" || key === "gputemp" || key === "drivetemp" || key === "bat"
       pending.push({ at: now, key: key, critical: critical, text: Model.alertText(key, data, th) })
@@ -412,8 +420,9 @@ Singleton {
   }
 
   // Drive SMART health via udisks2 (sample.sh health). Wear moves in
-  // weeks, so this runs at startup and panel open, not per tick. A drive
-  // that turns bad notifies once per shell session.
+  // weeks, so this runs at startup and panel open, not per tick. With the
+  // drivehealth alert enabled, a drive that turns bad notifies once per
+  // shell session; the DISK tab renders it urgent either way.
   Process {
     id: healthProc
     command: ["bash", root.scriptPath, "health"]
@@ -422,9 +431,11 @@ Singleton {
       onStreamFinished: {
         var parsed = Model.parseSample(text)
         root.driveHealth = parsed.driveHealth
+        if (!root.alertsEnabled || root.enabledAlerts.indexOf("drivehealth") === -1) return
+        var wearPct = Model.thresholdsFrom(root.settings).wearPct
         for (var i = 0; i < parsed.driveHealth.length; i++) {
           var d = parsed.driveHealth[i]
-          if (!Model.driveHealthBad(d) || root._healthNotified[d.dev]) continue
+          if (!Model.driveHealthBad(d, wearPct) || root._healthNotified[d.dev]) continue
           root._healthNotified[d.dev] = true
           var message = "Drive health: " + (d.model !== "" ? d.model + " (" + d.dev + ")" : d.dev)
             + " — " + Model.fmtDriveHealth(d)

@@ -204,6 +204,12 @@ for c in /sys/class/drm/card[0-9] /sys/class/drm/card[0-9][0-9]; do
   busy=""; rline "$d/gpu_busy_percent" && busy=$REPLY
   vram_used=""; rline "$d/mem_info_vram_used" && vram_used=$REPLY
   vram_total=""; rline "$d/mem_info_vram_total" && vram_total=$REPLY
+  gtt_used=""; rline "$d/mem_info_gtt_used" && gtt_used=$REPLY
+  gtt_total=""; rline "$d/mem_info_gtt_total" && gtt_total=$REPLY
+  # APU or dGPU? The kernel exposes mem_busy_percent only for dedicated
+  # VRAM, so its absence marks an iGPU — whose mem_info_vram_total is just
+  # the BIOS carve-out, with the real ceiling in GTT (shared system RAM).
+  apu=0; [ -r "$d/mem_busy_percent" ] || apu=1
   temp=""
   power=""
   for t in "$d"/hwmon/hwmon*/temp*_input; do
@@ -219,7 +225,7 @@ for c in /sys/class/drm/card[0-9] /sys/class/drm/card[0-9][0-9]; do
     rline "$p" && power=$REPLY
     break
   done
-  echo "${c##*/card}|$busy|$vram_used|$vram_total|$temp|$power"
+  echo "${c##*/card}|$busy|$vram_used|$vram_total|$temp|$power|$gtt_used|$gtt_total|$apu"
 done
 
 echo '###GPUINTEL'

@@ -23,10 +23,15 @@ var METRICS = [
 var DEFAULT_SHOW = ["cpu", "ram", "cputemp"]
 
 // Bar segments turn urgent-colored at these values; each is overridable via
-// the widget's inline settings (urgentCpuPct, urgentMemPct, urgentCpuTempC,
-// urgentGpuTempC, urgentDriveTempC, urgentDiskPct). Different silicon has
-// different comfort zones: GPUs run hot by design, SSDs throttle early.
-var DEFAULT_THRESHOLDS = { cpuPct: 90, memPct: 90, cpuTempC: 85, gpuTempC: 90, driveTempC: 70, diskPct: 90 }
+// the widget's inline settings (urgent*), edited from the panel's BAR tab.
+// Different silicon has different comfort zones: GPUs run hot by design,
+// SSDs throttle early. batPct is a floor (urgent below), wearPct is the
+// drive-health wear alarm.
+var DEFAULT_THRESHOLDS = {
+  cpuPct: 90, memPct: 90, gpuPct: 90, vramPct: 90,
+  cpuTempC: 85, gpuTempC: 90, driveTempC: 70,
+  diskPct: 90, batPct: 15, wearPct: 90
+}
 
 var ICON_DOWN = "\u{f0045}" // 󰁅
 var ICON_UP = "\u{f005d}"   // 󰁝
@@ -73,15 +78,22 @@ function thresholdsFrom(settings) {
   }
   settings = settings || {}
   // The pre-0.5.0 single urgentTempC still works as a fallback for the
-  // per-component CPU/GPU thresholds.
+  // per-component CPU/GPU thresholds, and the pre-0.9.0 shared CPU/RAM
+  // values still cover GPU/VRAM until their own are set.
   var legacy = num(settings.urgentTempC, NaN)
+  var cpuPct = num(settings.urgentCpuPct, DEFAULT_THRESHOLDS.cpuPct)
+  var memPct = num(settings.urgentMemPct, DEFAULT_THRESHOLDS.memPct)
   return {
-    cpuPct: num(settings.urgentCpuPct, DEFAULT_THRESHOLDS.cpuPct),
-    memPct: num(settings.urgentMemPct, DEFAULT_THRESHOLDS.memPct),
+    cpuPct: cpuPct,
+    memPct: memPct,
+    gpuPct: num(settings.urgentGpuPct, cpuPct),
+    vramPct: num(settings.urgentVramPct, memPct),
     cpuTempC: num(settings.urgentCpuTempC, isFinite(legacy) ? legacy : DEFAULT_THRESHOLDS.cpuTempC),
     gpuTempC: num(settings.urgentGpuTempC, isFinite(legacy) ? legacy : DEFAULT_THRESHOLDS.gpuTempC),
     driveTempC: num(settings.urgentDriveTempC, DEFAULT_THRESHOLDS.driveTempC),
-    diskPct: num(settings.urgentDiskPct, DEFAULT_THRESHOLDS.diskPct)
+    diskPct: num(settings.urgentDiskPct, DEFAULT_THRESHOLDS.diskPct),
+    batPct: num(settings.urgentBatPct, DEFAULT_THRESHOLDS.batPct),
+    wearPct: num(settings.urgentWearPct, DEFAULT_THRESHOLDS.wearPct)
   }
 }
 
@@ -485,8 +497,9 @@ function prettyGpuName(raw) {
   return name.replace(/^[^\[]*\[[^\]]*\]\s*/, "") || name
 }
 
-// GPU lines (amdgpu sysfs): card|busy|vram_used|vram_total|temp|power (µW);
-// the lspci name arrives separately in the static GPUNAMES section.
+// GPU lines (amdgpu sysfs): card|busy|vram_used|vram_total|temp|power (µW)
+// |gtt_used|gtt_total|apu; the lspci name arrives separately in the static
+// GPUNAMES section. Pre-0.9.0 captures without the GTT fields still parse.
 function parseGpus(lines, names) {
   var result = []
   for (var i = 0; i < lines.length; i++) {
@@ -500,10 +513,25 @@ function parseGpus(lines, names) {
       vramTotal: Number(parts[3]) || 0,
       celsius: parts[4] !== "" ? Number(parts[4]) / 1000 : NaN,
       powerW: parts.length > 5 && parts[5] !== "" ? Number(parts[5]) / 1e6 : NaN,
+      gttUsed: parts.length > 6 ? Number(parts[6]) || 0 : 0,
+      gttTotal: parts.length > 7 ? Number(parts[7]) || 0 : 0,
+      apu: parts.length > 8 && parts[8].trim() === "1",
       name: prettyGpuName(names && parts[0] in names ? names[parts[0]] : "")
     })
   }
   return result
+}
+
+// The memory pool a GPU can actually allocate from. A dGPU's pool is its
+// VRAM. An APU's mem_info_vram_total is only the BIOS carve-out — once
+// it's spent the driver allocates from GTT (a window into system RAM), so
+// the true ceiling is carve-out + GTT.
+function gpuMemUsed(gpu) {
+  return gpu.apu ? (gpu.vramUsed || 0) + (gpu.gttUsed || 0) : (gpu.vramUsed || 0)
+}
+
+function gpuMemTotal(gpu) {
+  return gpu.apu ? (gpu.vramTotal || 0) + (gpu.gttTotal || 0) : (gpu.vramTotal || 0)
 }
 
 // GPUINTEL lines: card|temp|power (µW). i915/xe expose no busy counter,
@@ -660,12 +688,13 @@ function parseDriveHealth(lines) {
 }
 
 // A drive worth worrying about: the controller raised a critical warning
-// (or SATA SMART says failing), wear is nearly spent, or the media itself
-// has logged errors.
-function driveHealthBad(drive) {
+// (or SATA SMART says failing), wear passed the (configurable) alarm
+// level, or the media itself has logged errors.
+function driveHealthBad(drive, wearLimit) {
   if (!drive) return false
+  var limit = isFinite(wearLimit) ? wearLimit : DEFAULT_THRESHOLDS.wearPct
   if (drive.warning !== "") return true
-  if (isFinite(drive.wearPct) && drive.wearPct >= 90) return true
+  if (isFinite(drive.wearPct) && drive.wearPct >= limit) return true
   if (isFinite(drive.mediaErrors) && drive.mediaErrors > 0) return true
   return false
 }
@@ -889,13 +918,25 @@ function toggleHiddenSensor(current, key) {
   return list
 }
 
-// The discrete GPU when there is one: the card with the most VRAM.
+// The discrete GPU when there is one: the card with the most *dedicated*
+// VRAM. Deliberately not the pooled total — an APU's GTT window is sized
+// off system RAM and would let a 2-CU iGPU outrank a real dGPU.
 function primaryGpu(gpus) {
   var best = null
   for (var i = 0; i < gpus.length; i++) {
     if (!best || gpus[i].vramTotal > best.vramTotal) best = gpus[i]
   }
   return best
+}
+
+// GPU-tab display order: the primary card first, the rest in card order —
+// the card whose stats the bar follows shouldn't hide below an idle iGPU.
+function primaryFirstGpus(gpus) {
+  var primary = primaryGpu(gpus)
+  if (!primary) return gpus
+  var result = [primary]
+  for (var i = 0; i < gpus.length; i++) if (gpus[i] !== primary) result.push(gpus[i])
+  return result
 }
 
 function diskFor(disks, mount) {
@@ -1080,7 +1121,7 @@ function metricValue(key, data, pad) {
     case "ram": return p3(fmtPct(data.memPct))
     case "gpu": return data.gpu && !data.gpu.asleep && isFinite(data.gpu.busy) ? p3(fmtPct(data.gpu.busy)) : ""
     case "gputemp": return data.gpu && !data.gpu.asleep && isFinite(data.gpu.celsius) ? p3(fmtTemp(data.gpu.celsius)) : ""
-    case "vram": return data.gpu && !data.gpu.asleep && data.gpu.vramTotal > 0 ? p3(fmtPct(100 * data.gpu.vramUsed / data.gpu.vramTotal)) : ""
+    case "vram": return data.gpu && !data.gpu.asleep && gpuMemTotal(data.gpu) > 0 ? p3(fmtPct(100 * gpuMemUsed(data.gpu) / gpuMemTotal(data.gpu))) : ""
     case "disk": return data.disk ? p3(fmtPct(100 * data.disk.used / data.disk.size)) : ""
     case "io": return data.io ? "R" + p4(fmtRateShort(data.io.read)) + " W" + p4(fmtRateShort(data.io.write)) : ""
     case "net": return ICON_DOWN + p4(fmtRateShort(data.netDown)) + " " + ICON_UP + p4(fmtRateShort(data.netUp))
@@ -1099,13 +1140,13 @@ function metricUrgent(key, data, th) {
     case "cpu": return data.cpuPct >= th.cpuPct
     case "cputemp": return isFinite(data.cpuTemp) && data.cpuTemp >= th.cpuTempC
     case "ram": return data.memPct >= th.memPct
-    case "gpu": return !!(data.gpu && !data.gpu.asleep && isFinite(data.gpu.busy) && data.gpu.busy >= th.cpuPct)
+    case "gpu": return !!(data.gpu && !data.gpu.asleep && isFinite(data.gpu.busy) && data.gpu.busy >= th.gpuPct)
     case "gputemp": return !!(data.gpu && !data.gpu.asleep && isFinite(data.gpu.celsius) && data.gpu.celsius >= th.gpuTempC)
     case "drivetemp": return !!(data.driveTemp && isFinite(data.driveTemp.celsius) && data.driveTemp.celsius >= th.driveTempC)
-    case "vram": return !!(data.gpu && !data.gpu.asleep && data.gpu.vramTotal > 0 && 100 * data.gpu.vramUsed / data.gpu.vramTotal >= th.memPct)
+    case "vram": return !!(data.gpu && !data.gpu.asleep && gpuMemTotal(data.gpu) > 0 && 100 * gpuMemUsed(data.gpu) / gpuMemTotal(data.gpu) >= th.vramPct)
     case "disk": return !!(data.disk && data.disk.size > 0 && 100 * data.disk.used / data.disk.size >= th.diskPct)
     case "load": return (Number(data.cores) || 0) > 0 && data.load1 >= data.cores
-    case "bat": return !!(data.battery && !data.battery.charging && isFinite(data.battery.pct) && data.battery.pct <= 15)
+    case "bat": return !!(data.battery && !data.battery.charging && isFinite(data.battery.pct) && data.battery.pct <= th.batPct)
     default: return false
   }
 }
@@ -1114,6 +1155,98 @@ function metricUrgent(key, data, th) {
 // segments the bar shows. Load is deliberately absent — it flaps.
 // drivetemp is alert-only: it never renders in the bar.
 var ALERT_KEYS = ["cpu", "cputemp", "ram", "gpu", "gputemp", "vram", "disk", "bat", "drivetemp"]
+
+// ---- Per-metric alert opt-in ---------------------------------------------
+// Alerts are off by default; the user turns each one on (and tunes its
+// threshold) from the BAR tab. The enabled set persists in shell.json as
+// an `alertsOn` list of keys. Thresholds keep coloring bar segments and
+// panel rows urgent whether or not the alert itself is enabled — the
+// toggle gates notifications only.
+//
+// One row per toggleable alert: which shell.json setting holds its
+// threshold, which thresholdsFrom() field carries the resolved value, and
+// the stepper's unit/bounds. `low` marks thresholds that alarm downward
+// (battery). `group` is the ALERTS-tab section header; entries sharing a
+// group must stay contiguous. drivehealth is event-driven (SMART via
+// udisks2), not a per-tick ALERT_KEYS metric; its threshold is the wear
+// alarm, and a critical warning or media errors trip it at any wear
+// level.
+var ALERT_SETTINGS = [
+  { key: "cpu",         label: "CPU usage",         group: "USAGE",       setting: "urgentCpuPct",     thKey: "cpuPct",     unit: "%",      min: 50, max: 100, step: 5 },
+  { key: "ram",         label: "RAM usage",         group: "USAGE",       setting: "urgentMemPct",     thKey: "memPct",     unit: "%",      min: 50, max: 100, step: 5 },
+  { key: "gpu",         label: "GPU usage",         group: "USAGE",       setting: "urgentGpuPct",     thKey: "gpuPct",     unit: "%",      min: 50, max: 100, step: 5 },
+  { key: "vram",        label: "VRAM usage",        group: "USAGE",       setting: "urgentVramPct",    thKey: "vramPct",    unit: "%",      min: 50, max: 100, step: 5 },
+  { key: "disk",        label: "Disk usage",        group: "USAGE",       setting: "urgentDiskPct",    thKey: "diskPct",    unit: "%",      min: 50, max: 100, step: 5 },
+  { key: "cputemp",     label: "CPU temperature",   group: "TEMPERATURE", setting: "urgentCpuTempC",   thKey: "cpuTempC",   unit: "°",      min: 50, max: 110, step: 5 },
+  { key: "gputemp",     label: "GPU temperature",   group: "TEMPERATURE", setting: "urgentGpuTempC",   thKey: "gpuTempC",   unit: "°",      min: 50, max: 120, step: 5 },
+  { key: "drivetemp",   label: "Drive temperature", group: "TEMPERATURE", setting: "urgentDriveTempC", thKey: "driveTempC", unit: "°",      min: 40, max: 100, step: 5 },
+  { key: "bat",         label: "Battery low",       group: "HEALTH",      setting: "urgentBatPct",     thKey: "batPct",     unit: "%",      min: 5,  max: 50,  step: 5, low: true },
+  { key: "drivehealth", label: "Drive health",      group: "HEALTH",      setting: "urgentWearPct",    thKey: "wearPct",    unit: "% worn", min: 50, max: 100, step: 5 }
+]
+
+function alertSettingByKey(key) {
+  for (var i = 0; i < ALERT_SETTINGS.length; i++) if (ALERT_SETTINGS[i].key === key) return ALERT_SETTINGS[i]
+  return null
+}
+
+// Normalize a stored `alertsOn` value into a deduplicated list of known
+// alert keys. Anything not listed is off — the default.
+function normalizeAlertsOn(value) {
+  var list = value instanceof Array ? value : []
+  var result = []
+  for (var i = 0; i < list.length; i++) {
+    if (alertSettingByKey(list[i]) !== null && result.indexOf(list[i]) === -1) result.push(list[i])
+  }
+  return result
+}
+
+function toggleAlertOn(current, key) {
+  var list = normalizeAlertsOn(current)
+  var index = list.indexOf(key)
+  if (index >= 0) list.splice(index, 1)
+  else if (alertSettingByKey(key) !== null) list.push(key)
+  return list
+}
+
+// One stepper move on an alert threshold, clamped to the entry's bounds.
+function stepAlertThreshold(entry, current, delta) {
+  var base = isFinite(current) ? current : DEFAULT_THRESHOLDS[entry.thKey]
+  var next = Math.round(base + delta * entry.step)
+  return Math.max(entry.min, Math.min(entry.max, next))
+}
+
+// "≥ 90%", "≤ 15%", "≥ 90% worn" — the compact threshold caption on an
+// alert row.
+function alertLimitText(entry, th) {
+  var value = th && isFinite(th[entry.thKey]) ? th[entry.thKey] : DEFAULT_THRESHOLDS[entry.thKey]
+  return (entry.low ? "≤ " : "≥ ") + value + entry.unit
+}
+
+// The live reading an alert watches, shown beside its threshold so the
+// stepper is set against reality instead of blind. "" when the reading
+// is unavailable (asleep GPU, no drive sensor).
+function alertNowText(entry, data, driveHealth) {
+  switch (entry.key) {
+    case "cpu": return fmtPct(data.cpuPct)
+    case "cputemp": return isFinite(data.cpuTemp) ? fmtTemp(data.cpuTemp) : ""
+    case "ram": return fmtPct(data.memPct)
+    case "gpu": return data.gpu && !data.gpu.asleep && isFinite(data.gpu.busy) ? fmtPct(data.gpu.busy) : ""
+    case "gputemp": return data.gpu && !data.gpu.asleep && isFinite(data.gpu.celsius) ? fmtTemp(data.gpu.celsius) : ""
+    case "vram": return data.gpu && !data.gpu.asleep && gpuMemTotal(data.gpu) > 0
+      ? fmtPct(100 * gpuMemUsed(data.gpu) / gpuMemTotal(data.gpu)) : ""
+    case "disk": return data.disk && data.disk.size > 0 ? fmtPct(100 * data.disk.used / data.disk.size) : ""
+    case "drivetemp": return data.driveTemp && isFinite(data.driveTemp.celsius) ? fmtTemp(data.driveTemp.celsius) : ""
+    case "bat": return data.battery && isFinite(data.battery.pct) ? fmtPct(data.battery.pct) : ""
+    case "drivehealth":
+      var worst = NaN
+      for (var i = 0; i < (driveHealth || []).length; i++) {
+        var wear = driveHealth[i].wearPct
+        if (isFinite(wear) && !(wear <= worst)) worst = wear
+      }
+      return isFinite(worst) ? Math.round(worst) + "%" : ""
+    default: return ""
+  }
+}
 
 // One-line notification body for a metric that crossed its threshold, e.g.
 // "CPU temperature at 92° (threshold 85°)".
@@ -1127,16 +1260,16 @@ function alertText(key, data, th) {
     case "cpu": value = fmtPct(data.cpuPct); limit = th.cpuPct + "%"; break
     case "cputemp": value = fmtTemp(data.cpuTemp); limit = th.cpuTempC + "°"; break
     case "ram": value = fmtPct(data.memPct); limit = th.memPct + "%"; break
-    case "gpu": value = data.gpu ? fmtPct(data.gpu.busy) : "—"; limit = th.cpuPct + "%"; break
+    case "gpu": value = data.gpu ? fmtPct(data.gpu.busy) : "—"; limit = th.gpuPct + "%"; break
     case "gputemp": value = data.gpu ? fmtTemp(data.gpu.celsius) : "—"; limit = th.gpuTempC + "°"; break
     case "drivetemp":
       label = "Drive temperature" + (data.driveTemp && data.driveTemp.device ? " (" + data.driveTemp.device + ")" : "")
       value = data.driveTemp ? fmtTemp(data.driveTemp.celsius) : "—"
       limit = th.driveTempC + "°"
       break
-    case "vram": value = data.gpu && data.gpu.vramTotal > 0 ? fmtPct(100 * data.gpu.vramUsed / data.gpu.vramTotal) : "—"; limit = th.memPct + "%"; break
+    case "vram": value = data.gpu && gpuMemTotal(data.gpu) > 0 ? fmtPct(100 * gpuMemUsed(data.gpu) / gpuMemTotal(data.gpu)) : "—"; limit = th.vramPct + "%"; break
     case "disk": value = data.disk ? fmtPct(100 * data.disk.used / data.disk.size) : "—"; limit = th.diskPct + "%"; break
-    case "bat": value = data.battery ? fmtPct(data.battery.pct) : "—"; limit = "15%"; break
+    case "bat": value = data.battery ? fmtPct(data.battery.pct) : "—"; limit = th.batPct + "%"; break
     default: value = "—"; limit = ""
   }
   return label + " at " + value + (limit !== "" ? " (threshold " + limit + ")" : "")
@@ -1280,6 +1413,8 @@ if (typeof module !== "undefined") {
     gpuProcRates: gpuProcRates,
     parseDriveHealth: parseDriveHealth,
     driveHealthBad: driveHealthBad,
+    gpuMemUsed: gpuMemUsed,
+    gpuMemTotal: gpuMemTotal,
     fmtDriveHealth: fmtDriveHealth,
     tempDeviceTitle: tempDeviceTitle,
     groupTemps: groupTemps,
@@ -1289,6 +1424,7 @@ if (typeof module !== "undefined") {
     parseNvidia: parseNvidia,
     markGpuAsleep: markGpuAsleep,
     primaryGpu: primaryGpu,
+    primaryFirstGpus: primaryFirstGpus,
     diskFor: diskFor,
     batterySummary: batterySummary,
     batteryIcon: batteryIcon,
@@ -1307,6 +1443,13 @@ if (typeof module !== "undefined") {
     metricValue: metricValue,
     metricUrgent: metricUrgent,
     ALERT_KEYS: ALERT_KEYS,
+    ALERT_SETTINGS: ALERT_SETTINGS,
+    alertSettingByKey: alertSettingByKey,
+    normalizeAlertsOn: normalizeAlertsOn,
+    toggleAlertOn: toggleAlertOn,
+    stepAlertThreshold: stepAlertThreshold,
+    alertLimitText: alertLimitText,
+    alertNowText: alertNowText,
     VITAL_KEYS: VITAL_KEYS,
     alertText: alertText,
     attributableAlert: attributableAlert,

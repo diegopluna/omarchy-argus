@@ -19,13 +19,14 @@ order in the panel's **BAR** tab; the choice persists to
 
 - **CPU** — processor model, overall usage with sparkline history, per-thread bars, frequency, temperature with session peak, load, uptime, stall pressure, kernel version
 - **MEM** — RAM usage with sparkline history, swap, PSI memory pressure
-- **GPU** — every GPU (AMD via amdgpu sysfs, NVIDIA via nvidia-smi, Intel via hwmon): name, usage with sparkline history, VRAM, temperature with session peak, power draw, and each card's busiest processes with GPU usage and VRAM (via DRM fdinfo; not available for the proprietary NVIDIA driver)
-- **DISK** — every real filesystem with its physical disk model (LUKS/LVM resolved via lsblk), live read/write rates per physical disk, PSI I/O pressure, and per-drive SMART health (wear, power-on time, warnings) via udisks2 — a failing or worn-out drive turns urgent and notifies once per session
+- **GPU** — every GPU (AMD via amdgpu sysfs, NVIDIA via nvidia-smi, Intel via hwmon): name, usage with sparkline history, VRAM, temperature with session peak, power draw, and each card's busiest processes with GPU usage and VRAM (via DRM fdinfo; not available for the proprietary NVIDIA driver). An AMD iGPU's memory meter covers its real pool — the BIOS carve-out plus GTT (shared system RAM) — not just the misleading carve-out, with the split shown underneath
+- **DISK** — every real filesystem with its physical disk model (LUKS/LVM resolved via lsblk), live read/write rates per physical disk, PSI I/O pressure, and per-drive SMART health (wear, power-on time, warnings) via udisks2 — a failing or worn-out drive turns urgent, and notifies once per session when its alert is enabled
 - **NET** — total and per-interface download/upload rates, with download/upload sparklines; virtual interfaces (VPN tunnels, bridges, veth) are listed but kept out of the totals so VPN traffic isn't counted twice
 - **PROC** — top processes by CPU and by memory (full command lines), each with a terminate button (SIGTERM, after confirmation)
 - **TEMP** — every hwmon sensor, grouped by device with friendly names (CPU, GPU, NVMe with drive model, RAM, Wi-Fi, …), plus fan speeds; each sensor row can carry its own alert threshold, set inline, and noisy sensors can be hidden (hidden sensors keep alerting)
 - **BAT** — per-battery charge, status, power draw, health, and time estimate (tab appears only when a system battery exists)
-- **BAR** — toggles and reorder arrows for which metrics the bar shows, the last few fired alerts with timestamps, and Argus's own measured sampling cost
+- **ALERTS** — every alert with its opt-in toggle and inline threshold stepper (all off by default), plus the last few fired alerts with timestamps
+- **BAR** — toggles and reorder arrows for which metrics the bar shows, and Argus's own measured sampling cost
 
 A watch row under the host name keeps every vital — CPU, RAM, CPU/GPU
 temperature, disk, battery — visible on every tab. A vital turns urgent
@@ -86,38 +87,48 @@ Inline settings on the widget's entry in `shell.json`:
 | `show` | `["cpu", "ram", "cputemp"]` | Metric keys shown in the bar, in display order |
 | `intervalSec` | `2` | Poll interval in seconds (1–60) |
 | `diskMount` | `/` | Mount point used by the bar's disk metric |
-| `urgentCpuPct` | `90` | CPU/GPU usage % at which the bar segment turns urgent |
-| `urgentMemPct` | `90` | RAM/VRAM usage % at which the bar segment turns urgent |
-| `urgentCpuTempC` | `85` | CPU temperature (°C) threshold |
-| `urgentGpuTempC` | `90` | GPU temperature (°C) threshold |
-| `urgentDriveTempC` | `70` | Drive (NVMe/SATA) temperature (°C) alert threshold |
-| `urgentDiskPct` | `90` | Disk usage % at which the bar segment turns urgent |
-| `alerts` | `"On"` | Desktop notification when a metric stays past its threshold |
+| `alerts` | `"On"` | Master switch over every alert notification |
 | `alertCommand` | — | Shell command run on every fired alert (see below) |
+| `alertsOn` | `[]` | Alert keys the user toggled on (edited from the ALERTS tab) |
 
-Temperature thresholds are per component — GPUs run hot by design, SSDs
-throttle early. The pre-0.5.0 single `urgentTempC` still works as a
-fallback for the CPU/GPU thresholds. Load average turns urgent when the
-1-minute load reaches the thread count; battery turns urgent at ≤15% while
-discharging. Drive temperature is alert-only (it has no bar segment) and
+Urgent thresholds — one per metric (`urgentCpuPct`, `urgentCpuTempC`,
+`urgentMemPct`, `urgentGpuPct`, `urgentGpuTempC`, `urgentVramPct`,
+`urgentDiskPct`, `urgentDriveTempC`, `urgentBatPct`, `urgentWearPct`) —
+are edited from the panel's **ALERTS** tab and persist as inline settings
+alongside the keys above. They are per component because different
+silicon has different comfort zones: GPUs run hot by design, SSDs
+throttle early. Pre-0.9.0 configs keep working: the old shared CPU/RAM
+values still cover GPU/VRAM until their own are set, and the pre-0.5.0
+single `urgentTempC` still falls back for the CPU/GPU temperatures.
+Load average turns urgent when the 1-minute load reaches the thread
+count. Drive temperature is alert-only (it has no bar segment) and
 watches the hottest NVMe/SATA sensor.
 
 ## Alerts
 
-With `alerts` on, a metric that stays past its urgent threshold for three
-consecutive ticks fires one desktop notification (via `notify-send`, so it
-renders through the Omarchy shell). Temperature and battery alerts use
-critical urgency; usage alerts are normal. Each metric then stays quiet
-for a 5-minute cooldown. Alerts evaluate every sampled metric, whether or
-not its bar segment is shown.
+Every alert is **off by default**. The ALERTS tab lists them — CPU usage,
+CPU temperature, RAM, GPU usage/temperature, VRAM, disk usage, drive
+temperature, battery low, drive health — each with a toggle, the live
+reading it watches ("now 43%"), and its threshold, editable inline
+(−/+ stepper). Thresholds color bar segments
+and panel rows urgent whether or not the alert is on; the toggle adds
+the notification.
+
+A toggled-on metric that stays past its threshold for three consecutive
+ticks fires one desktop notification (via `notify-send`, so it renders
+through the Omarchy shell). Temperature and battery alerts use critical
+urgency; usage alerts are normal. Each metric then stays quiet for a
+5-minute cooldown. Alerts evaluate every sampled metric, whether or not
+its bar segment is shown.
 
 CPU and memory alerts name their likely culprit — *"CPU usage at 100%
 (threshold 90%) — chromium 61%"* — from a process snapshot taken the
-moment the alert fires. A drive whose SMART health turns bad (critical
-warning, ≥90% wear, or media errors) alerts once per session.
+moment the alert fires. With the drive-health alert on, a drive whose
+SMART health turns bad (critical warning, wear past the configurable
+alarm level, or media errors) alerts once per session.
 
 The last ten fired alerts are kept, with timestamps, at the bottom of the
-BAR tab — for the "did anything trip while I was away?" question that a
+ALERTS tab — for the "did anything trip while I was away?" question that a
 vanished notification can't answer — and the CPU/MEM/GPU sparklines mark
 where in the history each alert fired.
 
@@ -172,7 +183,9 @@ omarchy-shell io.github.diegopluna.argus metrics   # current snapshot as JSON, f
 `lsblk`, `ps`, `/sys/class/hwmon` for temperatures and fans,
 `/sys/class/power_supply` for batteries (peripheral batteries such as mice
 are filtered out via the sysfs `scope` attribute), and
-`/sys/class/drm/card*/device` for AMD GPU busy/VRAM (amdgpu),
+`/sys/class/drm/card*/device` for AMD GPU busy/VRAM/GTT (amdgpu; a card
+without `mem_busy_percent` — which the kernel exposes only for dedicated
+VRAM — is an APU, so its memory pool is carve-out + GTT),
 `/proc/*/fdinfo` DRM usage stats for per-process GPU usage, and udisks2
 over D-Bus for drive SMART health. NVIDIA GPUs
 are read through `nvidia-smi --query-gpu=... --format=csv,noheader,nounits`

@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "io.github.diegopluna.argus",
   "name": "Argus",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "author": "Diego Peter",
   "license": "MIT",
-  "description": "CPU, RAM, GPU, disk, network, battery, and temperature stats in the bar, with a full system panel: 2m/1h sparkline history with alert markers, alerts that name the offending process, per-process GPU usage, drive SMART health, and an alert hook for automation.",
+  "description": "CPU, RAM, GPU, disk, network, battery, and temperature stats in the bar, with a full system panel: 2m/1h sparkline history with alert markers, per-metric opt-in alerts that name the offending process, per-process GPU usage, drive SMART health, and an alert hook for automation.",
   "kinds": [
     "bar-widget"
   ],
@@ -40,10 +40,10 @@
       {
         "key": "alerts",
         "type": "enum",
-        "label": "Desktop notifications on sustained threshold breach",
+        "label": "Allow alert notifications",
         "options": ["On", "Off"],
         "defaultValue": "On",
-        "description": "Notify when a metric stays past its urgent threshold for 3 ticks (5-minute cooldown per metric)."
+        "description": "Master switch over every alert. Individual alerts are off by default — toggle them on and set their thresholds in the panel's ALERTS tab."
       },
       {
         "key": "alertCommand",
@@ -51,60 +51,6 @@
         "label": "Run command on alert",
         "defaultValue": "",
         "description": "Shell command run on every fired alert (in addition to the notification); details arrive in ARGUS_ALERT_KEY/TEXT/CRITICAL/AT environment variables."
-      },
-      {
-        "key": "urgentCpuPct",
-        "type": "integer",
-        "label": "Urgent above: CPU/GPU usage (%)",
-        "min": 50,
-        "max": 100,
-        "step": 5,
-        "defaultValue": 90
-      },
-      {
-        "key": "urgentMemPct",
-        "type": "integer",
-        "label": "Urgent above: RAM/VRAM usage (%)",
-        "min": 50,
-        "max": 100,
-        "step": 5,
-        "defaultValue": 90
-      },
-      {
-        "key": "urgentCpuTempC",
-        "type": "integer",
-        "label": "Urgent above: CPU temperature (°C)",
-        "min": 50,
-        "max": 110,
-        "step": 5,
-        "defaultValue": 85
-      },
-      {
-        "key": "urgentGpuTempC",
-        "type": "integer",
-        "label": "Urgent above: GPU temperature (°C)",
-        "min": 50,
-        "max": 120,
-        "step": 5,
-        "defaultValue": 90
-      },
-      {
-        "key": "urgentDriveTempC",
-        "type": "integer",
-        "label": "Alert above: drive temperature (°C)",
-        "min": 40,
-        "max": 100,
-        "step": 5,
-        "defaultValue": 70
-      },
-      {
-        "key": "urgentDiskPct",
-        "type": "integer",
-        "label": "Urgent above: disk usage (%)",
-        "min": 50,
-        "max": 100,
-        "step": 5,
-        "defaultValue": 90
       }
     ]
   },

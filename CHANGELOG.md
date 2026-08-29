@@ -4,6 +4,47 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] — 2026-08-29
+
+### Changed
+- **Alerts are now per-metric opt-in and off by default**, configured in
+  a new ALERTS panel tab listing every alert — CPU usage, CPU
+  temperature, RAM, GPU usage/temperature, VRAM, disk usage, drive
+  temperature, battery low, drive health — each with its own toggle and
+  an inline −/+ threshold stepper, above the fired-alert log (which
+  moved there from the BAR tab). The enabled set persists to shell.json
+  as `alertsOn` (empty by default), so a fresh install never notifies
+  until the user asks it to. Thresholds still color bar segments and
+  panel rows urgent whether or not the alert is on — the toggle gates
+  notifications only. Rows for hardware the machine lacks (GPU, battery,
+  drive sensors) don't appear.
+- An AMD iGPU's memory now reports its real pool — BIOS carve-out plus
+  GTT (shared system RAM) — instead of the carve-out alone, which
+  understated an APU's ceiling by an order of magnitude (512 MB where
+  ~16 GB is allocatable). Applies to the GPU tab meter (with the
+  reserved + GTT split shown underneath), the bar's VRAM metric, and the
+  VRAM alert. APUs are detected by the kernel exposing `mem_busy_percent`
+  only for dedicated VRAM; primary-GPU ranking deliberately stays on
+  dedicated VRAM so an iGPU's RAM-sized GTT never outranks a real dGPU.
+- The previously hardcoded alert values became settings: battery low
+  (`urgentBatPct`, default 15%) and the drive-health wear alarm
+  (`urgentWearPct`, default 90%; a critical warning or media errors
+  still trip it at any wear level). GPU usage and VRAM split off from
+  the CPU/RAM thresholds they shared (`urgentGpuPct`, `urgentVramPct`);
+  the old shared values keep covering them until their own are set.
+- Threshold editing moved out of the plugin settings form and into the
+  ALERTS tab; the form keeps the master alerts switch and the alert
+  hook. Previously stored `urgent*` values are still honored.
+- Each alert row shows the live reading it watches ("now 43% · ≥ 90%"),
+  so thresholds are set against reality instead of blind; an armed
+  alert's threshold renders in the accent color, and the rows group
+  under USAGE / TEMPERATURE / HEALTH headers.
+- The tab selector wraps instead of overflowing the panel — ten tabs no
+  longer fit one row — and hairline separators divide the GPU, DISK,
+  and BAT tabs' per-device blocks, which previously ran together.
+- The GPU tab lists the primary card first — the card whose stats the
+  bar follows shouldn't hide below an idle iGPU.
+
 ## [0.8.1] — 2026-08-21
 
 ### Security
