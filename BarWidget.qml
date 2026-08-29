@@ -25,6 +25,15 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
   readonly property var shownKeys: Model.normalizeShow(setting("show", Model.DEFAULT_SHOW))
+
+  // Threshold captions render through this so they re-evaluate when the
+  // unit flips — Model's module state alone is invisible to QML's
+  // dependency tracking.
+  readonly property string tempUnit: setting("tempUnit", "C")
+  function fmtLimitTemp(celsius) {
+    var unit = tempUnit // binding dependency
+    return Model.displayTemp(celsius) + Model.tempSuffix()
+  }
   readonly property var thresholds: Model.thresholdsFrom(settings)
   readonly property var barSegs: Service.ready ? Model.barSegments(shownKeys, Service.barData, thresholds) : []
   // The panel's always-visible vitals, independent of the bar selection.
@@ -64,13 +73,14 @@ Panel {
     : [{ text: Model.PLACEHOLDER_ICON, urgent: false }]
 
   readonly property var tabs: {
-    var t = ["CPU", "MEM", "GPU", "DISK", "NET", "PROC", "TEMP"]
+    var t = ["HOME", "CPU", "MEM", "GPU", "DISK", "NET", "PROC", "TEMP"]
     if (Service.batteries.length > 0) t.push("BAT")
+    t.push("PWR")
     t.push("ALERTS")
-    t.push("BAR")
+    t.push("SETUP")
     return t
   }
-  property string tab: "CPU"
+  property string tab: "HOME"
 
   function switchTab(direction) {
     var index = (tabs.indexOf(tab) + direction + tabs.length) % tabs.length
@@ -81,15 +91,101 @@ Panel {
     flick.contentY = 0
     editingSensor = ""
     editingAlert = ""
+    procCursor = -1
+    expandedProc = ""
+    expandedAlertAt = 0
+    Service.lastTab = tab
   }
-  onTabsChanged: if (tabs.indexOf(tab) === -1) tab = "CPU"
+  onTabsChanged: if (tabs.indexOf(tab) === -1) tab = "HOME"
+
+  // ---- Home tab ---------------------------------------------------------
+  // Which tiles the user enabled, minus hardware this machine lacks.
+  readonly property var enabledHomeTiles: Model.normalizeHomeTiles(setting("homeTiles", Model.DEFAULT_HOME))
+  readonly property var homeTiles: {
+    var rows = []
+    for (var i = 0; i < enabledHomeTiles.length; i++) {
+      var tile = Model.homeTileByKey(enabledHomeTiles[i])
+      if (!tile) continue
+      if (tile.key === "gpu" && Service.gpus.length === 0) continue
+      if (tile.key === "bat" && Service.batteries.length === 0) continue
+      rows.push(tile)
+    }
+    return rows
+  }
+  // Every offerable tile, for the SETUP tab's SHOW ON HOME toggles.
+  readonly property var homeTileRows: {
+    var rows = []
+    for (var i = 0; i < Model.HOME_TILES.length; i++) {
+      var tile = Model.HOME_TILES[i]
+      if (tile.key === "gpu" && Service.gpus.length === 0) continue
+      if (tile.key === "bat" && Service.batteries.length === 0) continue
+      rows.push(tile)
+    }
+    return rows
+  }
+
+  function toggleHomeTile(key) {
+    persistPluginSetting("homeTiles", Model.toggleHomeTile(setting("homeTiles", Model.DEFAULT_HOME), key))
+  }
+
+  // Everything a home tile renders: big value, dim subline, and either a
+  // sparkline series (values/maxValue/heat/peakValue) or a meter
+  // (fraction, low = battery-style urgency direction).
+  function homeTileData(key) {
+    var d = Service
+    switch (key) {
+      case "cpu": return {
+        value: Model.fmtPct(d.cpuPct),
+        sub: (isFinite(d.cpuTempC) ? Model.fmtTemp(d.cpuTempC) + " · " : "") + (d.cpuMhz > 0 ? (d.cpuMhz / 1000).toFixed(1) + " GHz" : ""),
+        values: histFor(d.cpuHist, "cpu"), maxValue: 100, heat: true
+      }
+      case "ram": return {
+        value: Model.fmtPct(d.memPct),
+        sub: Model.fmtBytes(d.memUsed) + " of " + Model.fmtBytes(d.memTotal),
+        values: histFor(d.memHist, "mem"), maxValue: 100, heat: true
+      }
+      case "gpu": {
+        var g = d.primaryGpu
+        return {
+          value: g && !g.asleep && isFinite(g.busy) ? Model.fmtPct(g.busy) : "—",
+          sub: g ? ((isFinite(g.celsius) ? Model.fmtTemp(g.celsius) : "")
+            + (isFinite(g.powerW) && g.powerW > 0 ? " · " + Model.fmtWatts(g.powerW) : "")) : "",
+          values: histFor(d.gpuHist, "gpu"), maxValue: 100, heat: true
+        }
+      }
+      case "net": return {
+        value: "\u{f0045} " + Model.fmtBytes(d.netDown) + "/s",
+        sub: "\u{f005d} " + Model.fmtBytes(d.netUp) + "/s",
+        values: histFor(d.netDownHist, "netDown"), maxValue: 0, heat: false, peakValue: d.peakNetDown
+      }
+      case "io": return {
+        value: "R " + Model.fmtBytes(d.ioRead) + "/s",
+        sub: "W " + Model.fmtBytes(d.ioWrite) + "/s",
+        values: Model.sumHist(histFor(d.ioReadHist, "ioRead"), histFor(d.ioWriteHist, "ioWrite")),
+        maxValue: 0, heat: false, peakValue: d.peakIoRead + d.peakIoWrite
+      }
+      case "disk": {
+        var disk = Service.barData.disk
+        return disk && disk.size > 0
+          ? { value: Model.fmtPct(100 * disk.used / disk.size), sub: disk.mount + " · " + Model.fmtBytes(disk.used) + " of " + Model.fmtBytes(disk.size), fraction: disk.used / disk.size }
+          : { value: "—", sub: "", fraction: 0 }
+      }
+      case "bat": {
+        var b = d.battery
+        return b && isFinite(b.pct)
+          ? { value: Model.fmtPct(b.pct), sub: b.status + (isFinite(b.timeSec) ? " · " + Model.fmtUptime(b.timeSec) : ""), fraction: b.pct / 100, low: true }
+          : { value: "—", sub: "", fraction: 0 }
+      }
+      default: return { value: "", sub: "" }
+    }
+  }
 
   // Which TEMP-tab sensor row has its threshold editor expanded.
   property string editingSensor: ""
   // Which BAR-tab alert row has its threshold editor expanded.
   property string editingAlert: ""
 
-  // Alerts the user has opted into (all off by default); the BAR tab's
+  // Alerts the user has opted into (all off by default); the ALERTS tab's
   // toggles persist this list.
   readonly property var enabledAlerts: Model.normalizeAlertsOn(setting("alertsOn", []))
 
@@ -122,6 +218,8 @@ Panel {
   // Whether hidden sensor rows are temporarily revealed.
   property bool showHiddenSensors: false
   readonly property var hiddenSensors: Model.normalizeHiddenSensors(setting("hiddenSensors", []))
+  // Armed per-sensor alerts, for the ALERTS tab's overview list.
+  readonly property var sensorAlerts: Model.sensorAlertRows(Service.sensorThresholds, Service.temps)
   readonly property int hiddenSensorCount: {
     var count = 0
     for (var i = 0; i < Service.temps.length; i++) {
@@ -130,12 +228,73 @@ Panel {
     return count
   }
 
-  // Process pending a kill confirmation: { pid, name } or null.
+  // Process pending a kill confirmation: { pid, name, sig } or null;
+  // sig is "TERM" or "KILL".
   property var pendingKill: null
 
-  // Which span the sparklines show: the per-tick fine ring (~2m) or the
-  // hour ring of per-minute peaks. Toggled by clicking any chart caption.
-  property bool histHour: false
+  // ---- Process table state ---------------------------------------------
+  // Filter text, sort column/direction, keyboard cursor row, and which
+  // pid's row is expanded. The sampler ships the full table; slicing is
+  // pure Model code, so re-sorting costs no resample.
+  property string procFilter: ""
+  property string procSort: "cpu"
+  property bool procSortAsc: false
+  property string expandedProc: ""
+  property int procCursor: -1
+  // While the filter field holds focus, the panel's key catcher stands
+  // aside so h/j/k/l/x become typeable text.
+  property bool procFilterFocused: false
+  property var procFilterField: null
+  readonly property var procView: Model.visibleProcs(Service.psAll, procFilter, procSort, procSortAsc)
+
+  function setProcSort(key) {
+    if (procSort === key) {
+      procSortAsc = !procSortAsc
+    } else {
+      procSort = key
+      // Rates read best largest-first; identities smallest-first.
+      procSortAsc = key === "name" || key === "pid"
+    }
+    procCursor = -1
+  }
+
+  function moveProcCursor(delta) {
+    var count = procView.rows.length
+    if (count === 0) return
+    procCursor = procCursor < 0 ? (delta > 0 ? 0 : count - 1)
+      : Math.max(0, Math.min(count - 1, procCursor + delta))
+    Qt.callLater(scrollProcCursorIntoView)
+  }
+
+  function scrollProcCursorIntoView() {
+    var item = procRepeater.itemAt(procCursor)
+    if (!item) return
+    var top = item.mapToItem(content, 0, 0).y
+    var bottom = top + item.height
+    if (top < flick.contentY) flick.contentY = Math.max(0, top - Style.space(8))
+    else if (bottom > flick.contentY + flick.height)
+      flick.contentY = Math.min(Math.max(0, flick.contentHeight - flick.height), bottom - flick.height + Style.space(8))
+  }
+
+  function procAtCursor() {
+    return procCursor >= 0 && procCursor < procView.rows.length ? procView.rows[procCursor] : null
+  }
+
+  function armKill(proc, sig) {
+    pendingKill = {
+      pid: proc.pid,
+      name: Model.procDisplay(proc.comm).split(" ")[0].replace(/[<>&]/g, ""),
+      sig: sig
+    }
+  }
+
+  // Which span the sparklines show: the per-tick fine ring (~2m), the
+  // hour ring of per-minute peaks, or the persisted day ring. Cycled by
+  // clicking any chart caption.
+  property string histSpan: "2m"
+
+  // Which alert-log entry has its context snapshot expanded (its `at`).
+  property double expandedAlertAt: 0
 
   // Bumped on every user-triggered refresh so the hero's refresh glyph can
   // spin in acknowledgment — without it, r / middle click do nothing visible.
@@ -153,13 +312,15 @@ Panel {
     for (var i = 0; i < Service.alertLog.length; i++) {
       if (keys.indexOf(Service.alertLog[i].key) !== -1) times.push(Service.alertLog[i].at)
     }
-    var slotSec = histHour ? Model.HOUR_SLOT_SEC : Service.intervalSec
+    var slotSec = Model.spanSlotSec(histSpan, Service.intervalSec)
     return Model.markerIndices(times, Service.lastTickAt, slotSec, Model.HISTORY_LEN)
   }
 
   // The series a chart renders at the current span.
   function histFor(fine, key) {
-    return histHour ? Model.hourValues(Service.hourHist, key) : fine
+    if (histSpan === "1h") return Model.hourValues(Service.hourHist, key)
+    if (histSpan === "24h") return Model.hourValues(Service.dayHist, key)
+    return fine
   }
 
   function setSensorLimit(key, value) {
@@ -205,6 +366,10 @@ Panel {
       root.refreshNow()
       return
     }
+    if (text === "/" && tab === "PROC") {
+      if (procFilterField) procFilterField.forceActiveFocus()
+      return
+    }
     var digit = parseInt(text, 10)
     if (!isNaN(digit) && digit >= 1 && digit <= tabs.length) {
       tab = tabs[digit - 1]
@@ -240,7 +405,7 @@ Panel {
     return fraction >= 0.9 ? root.urgent : Color.accent
   }
 
-  // BAR tab rows: shown metrics first, in bar order, then the rest. The
+  // SETUP tab bar-metric rows: shown metrics first, in bar order, then the rest. The
   // battery metric only appears on machines that have one.
   readonly property var metricRows: {
     var rows = []
@@ -264,6 +429,8 @@ Panel {
   onOpenedChanged: {
     if (opened) {
       Service.panelOpened()
+      // Reopen where the user left off; an urgent metric still wins.
+      if (tabs.indexOf(Service.lastTab) !== -1) tab = Service.lastTab
       // Land on the tab that explains the problem, if there is one.
       for (var i = 0; i < barSegs.length; i++) {
         if (!barSegs[i].urgent) continue
@@ -281,8 +448,16 @@ Panel {
 
   // One shared Service sampler runs for every bar surface; each widget
   // instance pushes its (identical) inline settings into the singleton.
-  onSettingsChanged: Service.settings = root.settings
-  Component.onCompleted: Service.settings = root.settings
+  // The temperature unit is module state in this file's own copy of
+  // Model.js, so it is set here too.
+  onSettingsChanged: {
+    Service.settings = root.settings
+    Model.setTempUnit(setting("tempUnit", "C"))
+  }
+  Component.onCompleted: {
+    Service.settings = root.settings
+    Model.setTempUnit(setting("tempUnit", "C"))
+  }
 
   IpcHandler {
     target: root.ipcTarget
@@ -323,14 +498,15 @@ Panel {
     }
     function tab(name: string): string {
       var upper = String(name).toUpperCase()
+      if (upper === "BAR") upper = "SETUP" // pre-1.0 scripts
       if (root.tabs.indexOf(upper) === -1) return "unknown tab; use " + root.tabs.join("|")
       root.tab = upper
       return "ok"
     }
     function span(name: string): string {
       var v = String(name).toLowerCase()
-      if (v !== "2m" && v !== "1h") return "unknown span; use 2m|1h"
-      root.histHour = v === "1h"
+      if (Model.SPANS.indexOf(v) === -1) return "unknown span; use " + Model.SPANS.join("|")
+      root.histSpan = v
       return "ok"
     }
   }
@@ -426,15 +602,32 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // The filter field owns the keyboard while focused — h/j/k/l/x must
+      // be typeable text there, not navigation.
+      blocked: root.procFilterFocused
       onCloseRequested: {
         if (confirmKill.opened) { root.pendingKill = null; return }
         if (root.eggActive) { root.eggActive = false; return }
+        if (root.tab === "PROC" && root.procFilter !== "") { root.procFilter = ""; return }
         root.close()
       }
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onMoveRequested: function(dx, dy) {
         if (dx !== 0) root.switchTab(dx)
-        else if (dy !== 0) flick.scrollBy(dy * Style.space(110))
+        else if (dy !== 0) {
+          if (root.tab === "PROC") root.moveProcCursor(dy)
+          else flick.scrollBy(dy * Style.space(110))
+        }
+      }
+      onActivateRequested: {
+        if (root.tab !== "PROC") return
+        var proc = root.procAtCursor()
+        if (proc) root.expandedProc = root.expandedProc === proc.pid ? "" : proc.pid
+      }
+      onDeleteRequested: {
+        if (root.tab !== "PROC") return
+        var proc = root.procAtCursor()
+        if (proc) root.armKill(proc, "TERM")
       }
       onTextKey: function(text) { root.handlePanelKey(text) }
 
@@ -553,29 +746,68 @@ Panel {
           }
         }
 
-        // Tab selector: the same chips a ButtonGroup renders, but in a
-        // Flow — ten tabs no longer fit one row inside the panel, and a
-        // Row would overflow it, so a long tab set wraps instead.
-        // Underlining each tab's first letter advertises the letter-jump
-        // hotkey; the leading tag also flips the label into styled text.
-        Flow {
+        // Tab strip: plain text tabs with an accent underline — without
+        // chip chrome all eleven fit one calm row (wrapping only at large
+        // font scales). Hover brightens, the wheel cycles tabs, and the
+        // hairline below anchors the strip to the content.
+        Column {
           width: parent.width
-          spacing: Style.space(4)
+          spacing: Style.space(8)
 
-          Repeater {
-            model: root.tabs
+          Flow {
+            width: parent.width
+            spacing: Style.space(12)
 
-            Button {
-              required property string modelData
-              text: "<u>" + modelData.charAt(0) + "</u>" + modelData.slice(1)
-              selected: root.tab === modelData
-              bordered: true
-              foreground: root.foreground
-              accent: Color.accent
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: root.tab = modelData
+            WheelHandler {
+              onWheel: function(event) {
+                if (event.angleDelta.y !== 0) root.switchTab(event.angleDelta.y < 0 ? 1 : -1)
+              }
             }
+
+            Repeater {
+              model: root.tabs
+
+              Item {
+                id: tabItem
+                required property string modelData
+                readonly property bool active: root.tab === modelData
+                width: tabLabel.implicitWidth
+                height: tabLabel.implicitHeight + Style.space(5)
+
+                Text {
+                  id: tabLabel
+                  text: tabItem.modelData
+                  color: tabItem.active ? Color.accent : (tabMouse.containsMouse ? root.foreground : root.dim)
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                }
+
+                Rectangle {
+                  anchors.bottom: parent.bottom
+                  width: tabLabel.implicitWidth
+                  height: Math.max(2, Style.space(2))
+                  radius: height / 2
+                  color: Color.accent
+                  opacity: tabItem.active ? 1 : 0
+
+                  Behavior on opacity {
+                    NumberAnimation { duration: 140 }
+                  }
+                }
+
+                MouseArea {
+                  id: tabMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.tab = tabItem.modelData
+                }
+              }
+            }
+          }
+
+          PanelSeparator {
+            foreground: root.foreground
           }
         }
       }
@@ -587,6 +819,9 @@ Panel {
         anchors.top: header.bottom
         anchors.bottom: parent.bottom
         anchors.topMargin: Style.space(12)
+        // Gutter for the scroll indicator, so it never overlaps content
+        // (toggles and steppers sit flush at the right edge).
+        anchors.rightMargin: Style.space(7)
         contentWidth: width
         contentHeight: content.implicitHeight
         clip: true
@@ -612,6 +847,150 @@ Panel {
           id: content
           width: parent.width
           spacing: Style.space(12)
+
+          // ---- Home tab: the overview. Configurable tiles (SETUP tab picks
+          // them), each a glance at one subsystem; clicking opens its tab.
+          Column {
+            visible: root.tab === "HOME"
+            width: parent.width
+            spacing: Style.space(10)
+
+            Flow {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Repeater {
+                model: root.homeTiles
+
+                Rectangle {
+                  id: homeTile
+                  required property var modelData
+                  readonly property var tile: root.homeTileData(modelData.key)
+                  width: (parent.width - Style.space(8)) / 2
+                  height: tileContent.implicitHeight + Style.space(20)
+                  radius: Style.space(6)
+                  color: Qt.alpha(root.foreground, 0.05)
+
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: if (root.tabs.indexOf(homeTile.modelData.tab) !== -1) root.tab = homeTile.modelData.tab
+                  }
+
+                  Column {
+                    id: tileContent
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: Style.space(10)
+                    spacing: Style.space(5)
+
+                    RowLayout {
+                      width: parent.width
+                      spacing: Style.space(6)
+
+                      Text {
+                        Layout.fillWidth: true
+                        text: homeTile.modelData.icon + "  " + homeTile.modelData.label
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        elide: Text.ElideRight
+                      }
+
+                      Text {
+                        text: homeTile.tile.value
+                        color: root.foreground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.subtitle
+                      }
+                    }
+
+                    Text {
+                      visible: homeTile.tile.sub !== ""
+                      width: parent.width
+                      text: homeTile.tile.sub
+                      textFormat: Text.PlainText
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      elide: Text.ElideRight
+                    }
+
+                    Sparkline {
+                      visible: homeTile.tile.values !== undefined
+                      width: parent.width
+                      height: Style.space(22)
+                      values: homeTile.tile.values || []
+                      maxValue: homeTile.tile.maxValue || 0
+                      heat: homeTile.tile.heat === true
+                      peakValue: homeTile.tile.peakValue || 0
+                    }
+
+                    Rectangle {
+                      visible: homeTile.tile.fraction !== undefined
+                      width: parent.width
+                      height: Style.space(5)
+                      radius: height / 2
+                      color: Qt.alpha(root.foreground, 0.12)
+
+                      Rectangle {
+                        anchors.left: parent.left
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        width: parent.width * Math.max(0, Math.min(1, homeTile.tile.fraction || 0))
+                        radius: parent.radius
+                        color: homeTile.tile.low === true
+                          ? ((homeTile.tile.fraction || 0) <= 0.15 ? root.urgent : Color.accent)
+                          : root.meterColor(homeTile.tile.fraction || 0)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
+            SpanCaption {}
+
+            Text {
+              id: homeLastAlert
+              visible: Service.alertLog.length > 0
+              width: parent.width
+              text: Service.alertLog.length > 0
+                ? "Last alert · " + Qt.formatDateTime(new Date(Service.alertLog[0].at), "ddd HH:mm") + " · " + Service.alertLog[0].text
+                : ""
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.tab = "ALERTS"
+              }
+            }
+
+            Text {
+              visible: root.homeTiles.length === 0
+              width: parent.width
+              text: "All Home tiles are hidden — pick some in the SETUP tab."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              horizontalAlignment: Text.AlignHCenter
+            }
+
+            Text {
+              width: parent.width
+              text: "Click a tile to open its tab · choose tiles in the SETUP tab"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              horizontalAlignment: Text.AlignHCenter
+            }
+          }
 
           // ---- CPU tab
           Column {
@@ -639,36 +1018,108 @@ Panel {
 
             SpanCaption {}
 
-            Text {
-              text: Service.corePcts.length + " threads"
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
-
-            Flow {
+            // Core grid, laid out like the silicon: SMT siblings fused
+            // into one core cell, cores grouped by L3 domain (CCDs on
+            // multi-die parts), efficiency cores drawn shorter on hybrid
+            // chips. Machines without exposed topology keep the flat grid.
+            Column {
+              id: coreGrid
+              readonly property var topo: Model.cpuTopoGroups(Service.cpuTopo)
               width: parent.width
-              spacing: Style.space(3)
+              spacing: Style.space(6)
 
               Repeater {
-                model: Service.corePcts
+                model: coreGrid.topo.groups
 
-                Rectangle {
-                  required property real modelData
-                  width: Style.space(12)
-                  height: Style.space(24)
-                  radius: Style.space(2)
-                  color: Qt.alpha(root.foreground, 0.12)
+                Column {
+                  id: topoGroup
+                  required property var modelData
+                  width: parent.width
+                  spacing: Style.space(3)
+
+                  Text {
+                    text: (topoGroup.modelData.label !== "" ? topoGroup.modelData.label + " · " : "")
+                      + topoGroup.modelData.cores.length + " cores"
+                      + (coreGrid.topo.smt ? ", " + Service.corePcts.length + " threads" : "")
+                      + (Model.groupFreqText(topoGroup.modelData, Service.cpuFreq) !== ""
+                        ? " · " + Model.groupFreqText(topoGroup.modelData, Service.cpuFreq) : "")
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+
+                  Flow {
+                    width: parent.width
+                    spacing: Style.space(4)
+
+                    Repeater {
+                      model: topoGroup.modelData.cores
+
+                      Row {
+                        id: coreCell
+                        required property var modelData
+                        spacing: 1
+
+                        Repeater {
+                          model: coreCell.modelData.cpus
+
+                          Rectangle {
+                            required property var modelData
+                            readonly property real pct: Service.corePcts[modelData] || 0
+                            width: Style.space(10)
+                            height: coreCell.modelData.eff ? Style.space(17) : Style.space(24)
+                            radius: Style.space(2)
+                            color: Qt.alpha(root.foreground, 0.12)
+
+                            Rectangle {
+                              anchors.bottom: parent.bottom
+                              anchors.left: parent.left
+                              anchors.right: parent.right
+                              // Idle threads show empty cells — minimum
+                              // fills read as a dashed line of phantom load.
+                              height: parent.pct < 1 ? 0 : Math.max(Style.space(2), parent.height * parent.pct / 100)
+                              radius: parent.radius
+                              color: root.meterColor(parent.pct / 100)
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
+              Text {
+                visible: coreGrid.topo.groups.length === 0
+                text: Service.corePcts.length + " threads"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              Flow {
+                visible: coreGrid.topo.groups.length === 0
+                width: parent.width
+                spacing: Style.space(3)
+
+                Repeater {
+                  model: coreGrid.topo.groups.length === 0 ? Service.corePcts : []
 
                   Rectangle {
-                    anchors.bottom: parent.bottom
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    // An idle thread shows an empty cell — a minimum fill on
-                    // all 16+ cells reads as a dashed line of phantom load.
-                    height: parent.modelData < 1 ? 0 : Math.max(Style.space(2), parent.height * parent.modelData / 100)
-                    radius: parent.radius
-                    color: root.meterColor(parent.modelData / 100)
+                    required property real modelData
+                    width: Style.space(12)
+                    height: Style.space(24)
+                    radius: Style.space(2)
+                    color: Qt.alpha(root.foreground, 0.12)
+
+                    Rectangle {
+                      anchors.bottom: parent.bottom
+                      anchors.left: parent.left
+                      anchors.right: parent.right
+                      height: parent.modelData < 1 ? 0 : Math.max(Style.space(2), parent.height * parent.modelData / 100)
+                      radius: parent.radius
+                      color: root.meterColor(parent.modelData / 100)
+                    }
                   }
                 }
               }
@@ -687,6 +1138,19 @@ Panel {
             DetailRow {
               label: "Peak temperature (session)"
               value: isFinite(Service.peakCpuTemp) ? Model.fmtTemp(Service.peakCpuTemp) : ""
+            }
+
+            SpanCaption {
+              visible: isFinite(Service.cpuTempC)
+              prefix: "Temperature · "
+            }
+
+            Sparkline {
+              visible: isFinite(Service.cpuTempC)
+              width: parent.width
+              values: root.histFor(Service.cpuTempHist, "cpuTemp")
+              maxValue: 100
+              markers: root.alertMarkers(["cputemp"])
             }
 
             DetailRow {
@@ -712,7 +1176,11 @@ Panel {
 
           // ---- Memory tab
           Column {
+            id: memTab
             visible: root.tab === "MEM"
+            // free(1)'s used / cache / free accounting, for the split bar.
+            readonly property var split: Model.memBreakdown(Service.memInfo)
+            readonly property string swapKind: Model.swapNote(Service.swaps)
             width: parent.width
             spacing: Style.space(8)
 
@@ -737,9 +1205,53 @@ Panel {
 
             SpanCaption {}
 
+            // Where the memory actually is: in use, reclaimable cache, free.
+            Rectangle {
+              width: parent.width
+              height: Style.space(6)
+              radius: height / 2
+              color: Qt.alpha(root.foreground, 0.12)
+              clip: true
+
+              Row {
+                anchors.fill: parent
+
+                Rectangle {
+                  width: parent.width * memTab.split.used / Math.max(1, memTab.split.total)
+                  height: parent.height
+                  color: Color.accent
+                }
+
+                Rectangle {
+                  width: parent.width * memTab.split.cache / Math.max(1, memTab.split.total)
+                  height: parent.height
+                  color: Qt.alpha(root.foreground, 0.35)
+                }
+              }
+            }
+
+            Flow {
+              width: parent.width
+              spacing: Style.space(14)
+
+              MemLegend { swatch: Color.accent; text: "In use " + Model.fmtBytes(memTab.split.used) }
+              MemLegend { swatch: Qt.alpha(root.foreground, 0.35); text: "Cache " + Model.fmtBytes(memTab.split.cache) }
+              MemLegend { swatch: Qt.alpha(root.foreground, 0.12); text: "Free " + Model.fmtBytes(memTab.split.free) }
+            }
+
+            Text {
+              width: parent.width
+              text: "Cache is reclaimable — the kernel hands it back the moment a program needs the memory."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
             MeterRow {
               visible: Service.swapTotal > 0
-              label: "Swap · " + Model.fmtBytes(Service.swapUsed) + " of " + Model.fmtBytes(Service.swapTotal)
+              label: "Swap" + (memTab.swapKind !== "" ? " (" + memTab.swapKind + ")" : "")
+                + " · " + Model.fmtBytes(Service.swapUsed) + " of " + Model.fmtBytes(Service.swapTotal)
               value: Model.fmtPct(Service.swapPct)
               fraction: Service.swapPct / 100
             }
@@ -747,6 +1259,11 @@ Panel {
             DetailRow {
               label: "Available"
               value: Service.ready ? Model.fmtBytes(Service.memTotal - Service.memUsed) : ""
+            }
+
+            DetailRow {
+              label: "Dirty (waiting for disk)"
+              value: Service.memInfo.dirty > 0 ? Model.fmtBytes(Service.memInfo.dirty) : ""
             }
 
             DetailRow {
@@ -1079,58 +1596,221 @@ Panel {
 
               DetailRow {
                 required property var modelData
+                // Identity from the panel-only NETINFO sample: kind icon,
+                // Wi-Fi SSID, IPv4 address.
+                readonly property var info: Service.netInfo[modelData.iface]
+                readonly property string detail: Model.netIfaceDetail(info)
                 visible: modelData.total > 0
-                label: modelData.iface + (modelData.virtual ? " · virtual, not in totals" : "")
+                label: (Model.NET_KIND_ICONS[(info && info.kind) || (modelData.virtual ? "virtual" : "eth")] || "") + "  "
+                  + modelData.iface
+                  + (detail !== "" ? " · " + detail : "")
+                  + (modelData.virtual ? " · virtual, not in totals" : "")
                 value: "\u{f0045} " + Model.fmtBytes(modelData.down) + "/s · \u{f005d} " + Model.fmtBytes(modelData.up) + "/s"
               }
             }
           }
 
-          // ---- Processes tab
+          // ---- Processes tab: the full table — filter, sortable columns,
+          // keyboard cursor, expandable rows, terminate/kill.
           Column {
             visible: root.tab === "PROC"
             width: parent.width
-            spacing: Style.space(8)
+            spacing: Style.space(6)
 
-            PanelSectionHeader {
-              text: "TOP CPU"
+            TextField {
+              id: procFilterInput
+              width: parent.width
+              placeholderText: "Filter by name, user, or pid — press /"
               foreground: root.foreground
-              fontFamily: root.fontFamily
-            }
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              onTextChanged: {
+                if (root.procFilter !== text) {
+                  root.procFilter = text
+                  root.procCursor = -1
+                }
+              }
+              onActiveFocusChanged: root.procFilterFocused = activeFocus
+              Component.onCompleted: root.procFilterField = procFilterInput
+              Keys.onEscapePressed: {
+                text = ""
+                keyCatcher.forceActiveFocus()
+              }
+              Keys.onReturnPressed: keyCatcher.forceActiveFocus()
 
-            Repeater {
-              model: Service.psCpu
-
-              ProcRow {
-                required property var modelData
-                proc: modelData
-                value: modelData.cpu.toFixed(1) + "%"
+              // Esc clears the filter from the catcher's side too; keep
+              // the field's text in sync with the property.
+              Connections {
+                target: root
+                function onProcFilterChanged() {
+                  if (procFilterInput.text !== root.procFilter) procFilterInput.text = root.procFilter
+                }
               }
             }
 
-            PanelSectionHeader {
-              text: "TOP MEMORY"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
+            RowLayout {
+              width: parent.width
+              spacing: Style.space(8)
+
+              ProcHeader { sortKey: "name"; title: "NAME"; Layout.fillWidth: true }
+              ProcHeader { sortKey: "pid"; title: "PID"; Layout.preferredWidth: Style.space(52); alignRight: true }
+              ProcHeader { sortKey: "mem"; title: "MEM"; Layout.preferredWidth: Style.space(56); alignRight: true }
+              ProcHeader { sortKey: "cpu"; title: "CPU"; Layout.preferredWidth: Style.space(46); alignRight: true }
             }
 
-            Repeater {
-              model: Service.psMem
+            Column {
+              width: parent.width
+              spacing: 0
 
-              ProcRow {
-                required property var modelData
-                proc: modelData
-                value: Model.fmtBytes(Service.memTotal * modelData.mem / 100)
+              Repeater {
+                id: procRepeater
+                model: root.procView.rows
+
+                Column {
+                  id: procRow
+                  required property var modelData
+                  required property int index
+                  readonly property bool current: root.procCursor === index
+                  readonly property bool expanded: root.expandedProc === modelData.pid
+                  width: parent.width
+
+                  Rectangle {
+                    width: parent.width
+                    height: rowLine.implicitHeight + Style.space(6)
+                    radius: Style.space(3)
+                    color: procRow.current ? Qt.alpha(root.foreground, 0.08) : "transparent"
+
+                    MouseArea {
+                      anchors.fill: parent
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: {
+                        root.procCursor = procRow.index
+                        root.expandedProc = procRow.expanded ? "" : procRow.modelData.pid
+                      }
+                    }
+
+                    RowLayout {
+                      id: rowLine
+                      anchors.fill: parent
+                      anchors.leftMargin: Style.space(4)
+                      anchors.rightMargin: Style.space(4)
+                      spacing: Style.space(8)
+
+                      Text {
+                        Layout.fillWidth: true
+                        text: Model.procDisplay(procRow.modelData.comm)
+                        textFormat: Text.PlainText
+                        color: procRow.current ? root.foreground : root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                        elide: Text.ElideRight
+                      }
+
+                      Text {
+                        Layout.preferredWidth: Style.space(52)
+                        text: procRow.modelData.pid
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                        horizontalAlignment: Text.AlignRight
+                      }
+
+                      Text {
+                        Layout.preferredWidth: Style.space(56)
+                        text: Model.fmtBytes(Service.memTotal * procRow.modelData.mem / 100)
+                        color: root.foreground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                        horizontalAlignment: Text.AlignRight
+                      }
+
+                      Text {
+                        Layout.preferredWidth: Style.space(46)
+                        text: procRow.modelData.cpu.toFixed(1) + "%"
+                        color: root.foreground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                        horizontalAlignment: Text.AlignRight
+                      }
+                    }
+                  }
+
+                  // Expanded detail: the full command line, ownership, and
+                  // the kill actions (confirmed before anything is sent).
+                  Column {
+                    visible: procRow.expanded
+                    width: parent.width
+                    spacing: Style.space(4)
+                    leftPadding: Style.space(8)
+                    rightPadding: Style.space(4)
+                    bottomPadding: Style.space(6)
+
+                    Text {
+                      width: parent.width - parent.leftPadding - parent.rightPadding
+                      text: procRow.modelData.comm
+                      textFormat: Text.PlainText
+                      color: root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      wrapMode: Text.WrapAnywhere
+                    }
+
+                    RowLayout {
+                      width: parent.width - parent.leftPadding - parent.rightPadding
+                      spacing: Style.space(8)
+
+                      Text {
+                        Layout.fillWidth: true
+                        text: (procRow.modelData.user !== "" ? procRow.modelData.user : "—")
+                          + (procRow.modelData.threads > 0 ? " · " + procRow.modelData.threads + " threads" : "")
+                        textFormat: Text.PlainText
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        elide: Text.ElideRight
+                      }
+
+                      Button {
+                        text: "Terminate"
+                        bordered: true
+                        foreground: root.foreground
+                        fontFamily: root.fontFamily
+                        fontSize: Style.font.caption
+                        onClicked: root.armKill(procRow.modelData, "TERM")
+                      }
+
+                      Button {
+                        text: "Kill −9"
+                        bordered: true
+                        foreground: root.urgent
+                        fontFamily: root.fontFamily
+                        fontSize: Style.font.caption
+                        onClicked: root.armKill(procRow.modelData, "KILL")
+                      }
+                    }
+                  }
+                }
               }
             }
 
             Text {
+              visible: root.procView.hidden > 0
               width: parent.width
-              text: "\u{f0156} sends SIGTERM after confirmation."
+              text: root.procView.hidden + " more not shown · refine the filter"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              horizontalAlignment: Text.AlignHCenter
+            }
+
+            Text {
+              width: parent.width
+              text: "/ filter · j/k move · enter expand · x terminate · click headers to sort"
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
+              horizontalAlignment: Text.AlignHCenter
             }
           }
 
@@ -1199,7 +1879,7 @@ Panel {
 
                       Text {
                         visible: isFinite(sensorRow.limit) && !sensorRow.editing
-                        text: "alert " + sensorRow.limit + "°"
+                        text: "alert " + root.fmtLimitTemp(sensorRow.limit)
                         color: root.dim
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
@@ -1266,7 +1946,7 @@ Panel {
                       }
 
                       Text {
-                        text: sensorRow.limit + "°"
+                        text: root.fmtLimitTemp(sensorRow.limit)
                         color: root.foreground
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.body
@@ -1322,7 +2002,7 @@ Panel {
 
             Text {
               width: parent.width
-              text: "\u{f009a} sets a per-sensor alert threshold — the row turns urgent and a notification fires when it stays above the limit. \u{f0209} hides a sensor row (thresholds keep alerting)."
+              text: "\u{f009a} sets a per-sensor alert threshold — the row turns urgent and a notification fires when it stays above the limit; armed sensors are listed in the ALERTS tab. \u{f0209} hides a sensor row (thresholds keep alerting)."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -1431,7 +2111,7 @@ Panel {
 
           // ---- Bar metric selection tab
           Column {
-            visible: root.tab === "BAR"
+            visible: root.tab === "SETUP"
             width: parent.width
             spacing: Style.space(8)
 
@@ -1519,6 +2199,118 @@ Panel {
               }
             }
 
+            PanelSectionHeader {
+              text: "SHOW ON HOME"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Repeater {
+              model: root.homeTileRows
+
+              RowLayout {
+                id: homeConfigRow
+                required property var modelData
+                width: parent.width
+                spacing: Style.space(4)
+
+                Text {
+                  Layout.preferredWidth: Style.space(24)
+                  text: homeConfigRow.modelData.icon
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  horizontalAlignment: Text.AlignHCenter
+                }
+
+                Text {
+                  Layout.fillWidth: true
+                  text: homeConfigRow.modelData.label
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  elide: Text.ElideRight
+                }
+
+                ToggleSwitch {
+                  checked: root.enabledHomeTiles.indexOf(homeConfigRow.modelData.key) !== -1
+                  foreground: root.foreground
+                  accent: Color.accent
+                  onToggled: root.toggleHomeTile(homeConfigRow.modelData.key)
+                }
+              }
+            }
+
+            PanelSectionHeader {
+              text: "PANEL"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            RowLayout {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Text {
+                Layout.fillWidth: true
+                text: "Fahrenheit temperatures"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                elide: Text.ElideRight
+              }
+
+              ToggleSwitch {
+                checked: root.setting("tempUnit", "C") === "F"
+                foreground: root.foreground
+                accent: Color.accent
+                onToggled: root.persistPluginSetting("tempUnit", root.setting("tempUnit", "C") === "F" ? "C" : "F")
+              }
+            }
+
+            RowLayout {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Text {
+                Layout.fillWidth: true
+                text: "Refresh interval"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                elide: Text.ElideRight
+              }
+
+              PanelActionButton {
+                iconText: "\u{f0374}"
+                tooltipText: "-1s"
+                enabled: Service.intervalSec > 1
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                size: Style.space(22)
+                onClicked: root.persistPluginSetting("intervalSec", Math.max(1, Service.intervalSec - 1))
+              }
+
+              Text {
+                text: Service.intervalSec + "s"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              PanelActionButton {
+                iconText: "\u{f0415}"
+                tooltipText: "+1s"
+                enabled: Service.intervalSec < 60
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                size: Style.space(22)
+                onClicked: root.persistPluginSetting("intervalSec", Math.min(60, Service.intervalSec + 1))
+              }
+            }
+
             Text {
               visible: Service.avgSampleMs > 0
               width: parent.width
@@ -1549,6 +2341,107 @@ Panel {
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
               horizontalAlignment: Text.AlignHCenter
+            }
+          }
+
+          // ---- Power tab: measured draw per source and session energy.
+          Column {
+            visible: root.tab === "PWR"
+            width: parent.width
+            spacing: Style.space(8)
+
+            PanelSectionHeader {
+              text: "POWER DRAW"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Repeater {
+              model: Service.raplWatts
+
+              DetailRow {
+                required property var modelData
+                label: Model.raplLabel(modelData.name)
+                value: isFinite(modelData.watts) ? Model.fmtWatts(modelData.watts) : ""
+              }
+            }
+
+            Text {
+              visible: Service.raplRestricted && Service.raplWatts.length === 0
+              width: parent.width
+              text: "CPU package power (RAPL) exists on this machine, but the kernel keeps its counters root-only (a side-channel mitigation). A one-line udev rule unlocks read access — see the Argus README, section Power."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Repeater {
+              model: Service.gpus
+
+              DetailRow {
+                required property var modelData
+                label: modelData.label + (modelData.name !== "" ? " · " + modelData.name : "")
+                value: !modelData.asleep && isFinite(modelData.powerW) && modelData.powerW > 0 ? Model.fmtWatts(modelData.powerW) : ""
+              }
+            }
+
+            DetailRow {
+              label: Service.battery && Service.battery.charging ? "Battery (charging)" : "Battery draw"
+              value: Service.battery && Service.battery.watts > 0 ? Model.fmtWatts(Service.battery.watts) : ""
+            }
+
+            SpanCaption {
+              visible: Service.peakCpuPower > 0
+              prefix: "CPU package · session peak " + Model.fmtWatts(Service.peakCpuPower) + " · "
+            }
+
+            Sparkline {
+              visible: Service.peakCpuPower > 0
+              width: parent.width
+              values: root.histFor(Service.cpuPowerHist, "cpuPower")
+              heat: false
+              peakValue: Service.peakCpuPower
+            }
+
+            SpanCaption {
+              visible: Service.peakGpuPower > 0
+              prefix: "GPU (primary) · session peak " + Model.fmtWatts(Service.peakGpuPower) + " · "
+            }
+
+            Sparkline {
+              visible: Service.peakGpuPower > 0
+              width: parent.width
+              values: root.histFor(Service.gpuPowerHist, "gpuPower")
+              heat: false
+              peakValue: Service.peakGpuPower
+            }
+
+            PanelSectionHeader {
+              visible: Model.fmtWh(Service.cpuEnergyWh) !== "" || Model.fmtWh(Service.gpuEnergyWh) !== ""
+              text: "SESSION ENERGY"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            DetailRow {
+              label: "CPU package"
+              value: Model.fmtWh(Service.cpuEnergyWh)
+            }
+
+            DetailRow {
+              label: "GPU (primary)"
+              value: Model.fmtWh(Service.gpuEnergyWh)
+            }
+
+            Text {
+              visible: Model.fmtWh(Service.cpuEnergyWh) !== "" || Model.fmtWh(Service.gpuEnergyWh) !== ""
+              width: parent.width
+              text: "Energy since the shell started, integrated from measured draw."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
           }
 
@@ -1657,7 +2550,7 @@ Panel {
                   }
 
                   Text {
-                    text: alertRow.limit + alertRow.entry.unit
+                    text: alertRow.entry.unit === "°" ? root.fmtLimitTemp(alertRow.limit) : alertRow.limit + alertRow.entry.unit
                     color: root.foreground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
@@ -1686,24 +2579,166 @@ Panel {
               wrapMode: Text.WordWrap
             }
 
+            // Per-sensor alerts armed from the TEMP tab, listed here so
+            // this tab is the one complete view of everything armed.
             PanelSectionHeader {
-              text: "RECENT ALERTS"
+              visible: root.sensorAlerts.length > 0
+              text: "SENSOR ALERTS"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
 
             Repeater {
-              model: Service.alertLog
+              model: root.sensorAlerts
 
-              Text {
+              RowLayout {
+                id: sensorAlertRow
                 required property var modelData
                 width: parent.width
-                text: Qt.formatTime(new Date(modelData.at), "HH:mm") + " · " + modelData.text
-                textFormat: Text.PlainText
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                wrapMode: Text.WordWrap
+                spacing: Style.space(8)
+
+                Text {
+                  Layout.fillWidth: true
+                  text: sensorAlertRow.modelData.label
+                  textFormat: Text.PlainText
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  elide: Text.ElideRight
+                }
+
+                Text {
+                  visible: isFinite(sensorAlertRow.modelData.now)
+                  text: "now " + Model.fmtTemp(sensorAlertRow.modelData.now)
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+
+                Text {
+                  text: "≥ " + root.fmtLimitTemp(sensorAlertRow.modelData.limit)
+                  color: Color.accent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+
+                PanelActionButton {
+                  iconText: "\u{f009b}"
+                  tooltipText: "Remove this sensor alert"
+                  hoverColor: root.urgent
+                  foreground: root.dim
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  size: Style.space(22)
+                  onClicked: root.setSensorLimit(sensorAlertRow.modelData.key, NaN)
+                }
+              }
+            }
+
+            Text {
+              visible: root.sensorAlerts.length > 0
+              width: parent.width
+              text: "Sensor alerts are armed from the TEMP tab — the \u{f009a} button on any sensor row."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            RowLayout {
+              width: parent.width
+              spacing: Style.space(8)
+
+              PanelSectionHeader {
+                Layout.fillWidth: true
+                text: "RECENT ALERTS"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+
+              // The flight recorder's raw file, readable in place —
+              // rings, alert log, context snapshots and all.
+              Button {
+                text: "Open log in nvim"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                onClicked: {
+                  // The launcher chain flattens its command to a string
+                  // and re-splits it, eating quotes — so nvim gets exactly
+                  // one spaceless argument: a pretty-printed copy in the
+                  // runtime dir. -n -R: no swapfile, read-only, nothing
+                  // to prompt about.
+                  Quickshell.execDetached(["sh", "-c",
+                    'view="${XDG_RUNTIME_DIR:-/tmp}/argus-history-view.json"; jq . "$1" > "$view" 2>/dev/null || cp "$1" "$view"; exec omarchy-launch-or-focus-tui --app-id=org.omarchy.argus-history nvim -n -R "$view"',
+                    "argus-view", Service.historyPath])
+                }
+              }
+            }
+
+            Repeater {
+              model: Service.alertLog
+
+              Column {
+                id: alertEntry
+                required property var modelData
+                readonly property bool hasCtx: modelData.ctx !== undefined && modelData.ctx !== null
+                readonly property bool expanded: hasCtx && root.expandedAlertAt === modelData.at
+                width: parent.width
+                spacing: Style.space(2)
+
+                Text {
+                  width: parent.width
+                  text: Qt.formatDateTime(new Date(alertEntry.modelData.at), "ddd HH:mm") + " · " + alertEntry.modelData.text
+                  textFormat: Text.PlainText
+                  color: alertEntry.expanded ? root.foreground : root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: alertEntry.hasCtx ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: {
+                      if (alertEntry.hasCtx) root.expandedAlertAt = alertEntry.expanded ? 0 : alertEntry.modelData.at
+                    }
+                  }
+                }
+
+                // The context snapshot: what the system looked like the
+                // moment this alert fired.
+                Column {
+                  visible: alertEntry.expanded
+                  width: parent.width
+                  leftPadding: Style.space(12)
+                  spacing: Style.space(2)
+
+                  Text {
+                    width: parent.width - parent.leftPadding
+                    text: "at that moment · " + Model.fmtAlertContext(alertEntry.modelData.ctx)
+                    textFormat: Text.PlainText
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    wrapMode: Text.WordWrap
+                  }
+
+                  Repeater {
+                    model: alertEntry.expanded ? alertEntry.modelData.ctx.procs : []
+
+                    Text {
+                      required property var modelData
+                      width: parent.width - parent.leftPadding
+                      text: Model.fmtAlertProc(modelData, Service.memTotal)
+                      textFormat: Text.PlainText
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      elide: Text.ElideRight
+                    }
+                  }
+                }
               }
             }
 
@@ -1715,6 +2750,16 @@ Panel {
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               horizontalAlignment: Text.AlignHCenter
+            }
+
+            Text {
+              visible: Service.alertLog.length > 0
+              width: parent.width
+              text: "Click an alert to see what the system looked like when it fired. The log survives shell restarts."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
           }
 
@@ -1792,13 +2837,14 @@ Panel {
         z: 90
         opened: root.pendingKill !== null
         message: root.pendingKill
-          ? "Terminate " + root.pendingKill.name + " (PID " + root.pendingKill.pid + ")?"
+          ? (root.pendingKill.sig === "KILL" ? "Force kill " : "Terminate ")
+            + root.pendingKill.name + " (PID " + root.pendingKill.pid + ")?"
           : ""
-        confirmText: "Terminate"
+        confirmText: root.pendingKill && root.pendingKill.sig === "KILL" ? "Kill −9" : "Terminate"
         fontFamily: root.fontFamily
         onCanceled: root.pendingKill = null
         onConfirmed: {
-          Quickshell.execDetached(["kill", String(root.pendingKill.pid)])
+          Quickshell.execDetached(["kill", "-" + (root.pendingKill.sig || "TERM"), String(root.pendingKill.pid)])
           root.pendingKill = null
           killRefresh.restart()
         }
@@ -1813,18 +2859,22 @@ Panel {
     }
   }
 
-  // Sparkline caption that doubles as the history-span toggle: the active
-  // span renders in the accent color, and clicking anywhere on the caption
-  // flips every chart between the fine ring and the hour ring. The hour
-  // ring keeps each minute's peak, so spikes survive the zoom-out.
+  // Sparkline caption that doubles as the history-span control: the
+  // active span renders in the accent color, and clicking anywhere on
+  // the caption cycles every chart through 2m → 1h → 24h. The peak rings
+  // keep each slot's maximum, so spikes survive the zoom-out; the 24h
+  // ring persists across shell restarts (the flight recorder).
   component SpanCaption: Text {
     property string prefix: ""
     readonly property string fineLabel: Model.fmtUptime(Model.HISTORY_LEN * Service.intervalSec)
     text: {
       var accent = root.colorHex(Color.accent)
-      var fine = root.histHour ? fineLabel : "<font color=\"" + accent + "\">" + fineLabel + "</font>"
-      var hour = root.histHour ? "<font color=\"" + accent + "\">1h peaks</font>" : "1h peaks"
-      return prefix + "last " + fine + " · " + hour
+      function seg(label, span) {
+        return root.histSpan === span
+          ? "<font color=\"" + accent + "\">" + label + "</font>"
+          : label
+      }
+      return prefix + "last " + seg(fineLabel, "2m") + " · " + seg("1h", "1h") + " · " + seg("24h", "24h") + " peaks"
     }
     textFormat: Text.StyledText
     color: root.dim
@@ -1834,7 +2884,7 @@ Panel {
     MouseArea {
       anchors.fill: parent
       cursorShape: Qt.PointingHandCursor
-      onClicked: root.histHour = !root.histHour
+      onClicked: root.histSpan = Model.nextSpan(root.histSpan)
     }
   }
 
@@ -1864,45 +2914,47 @@ Panel {
     }
   }
 
-  // Process row: elided command line, metric value, and a terminate button
-  // that arms the confirm dialog.
-  component ProcRow: RowLayout {
-    id: procRow
-    property var proc: null
-    property string value: ""
-    width: parent ? parent.width : 0
-    spacing: Style.space(8)
+  // Legend chip for the memory split bar: color swatch + label.
+  component MemLegend: Row {
+    id: memLegend
+    required property color swatch
+    required property string text
+    spacing: Style.space(5)
+
+    Rectangle {
+      anchors.verticalCenter: parent.verticalCenter
+      width: Style.space(8)
+      height: Style.space(8)
+      radius: Style.space(2)
+      color: memLegend.swatch
+    }
 
     Text {
-      Layout.fillWidth: true
-      text: procRow.proc ? Model.procDisplay(procRow.proc.comm) + " · " + procRow.proc.pid : ""
-      textFormat: Text.PlainText
+      text: memLegend.text
       color: root.dim
       font.family: root.fontFamily
-      font.pixelSize: Style.font.body
-      elide: Text.ElideRight
+      font.pixelSize: Style.font.caption
     }
+  }
 
-    Text {
-      text: procRow.value
-      textFormat: Text.PlainText
-      color: root.foreground
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.body
-    }
+  // Clickable column header for the process table; the active sort column
+  // reads in the accent color with a direction arrow.
+  component ProcHeader: Text {
+    id: procHeader
+    required property string sortKey
+    required property string title
+    property bool alignRight: false
+    readonly property bool active: root.procSort === sortKey
+    text: title + (active ? (root.procSortAsc ? " ▴" : " ▾") : "")
+    color: active ? Color.accent : root.dim
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+    horizontalAlignment: alignRight ? Text.AlignRight : Text.AlignLeft
 
-    PanelActionButton {
-      iconText: "\u{f0156}"
-      tooltipText: "Terminate (SIGTERM)"
-      hoverColor: root.urgent
-      foreground: root.dim
-      fontFamily: root.fontFamily
-      fontSize: Style.font.bodySmall
-      size: Style.space(22)
-      onClicked: root.pendingKill = {
-        pid: procRow.proc.pid,
-        name: Model.procDisplay(procRow.proc.comm).split(" ")[0].replace(/[<>&]/g, "")
-      }
+    MouseArea {
+      anchors.fill: parent
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.setProcSort(procHeader.sortKey)
     }
   }
 

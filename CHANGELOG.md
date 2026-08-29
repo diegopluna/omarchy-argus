@@ -4,6 +4,101 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [1.0.0] — 2026-08-29
+
+### Added
+- **The flight recorder.** The 1-hour peak ring gained a sibling: a
+  24-hour ring (one 24-minute peak per bar), and both — plus the alert
+  log — persist to `~/.local/state/argus/history.json` once a minute
+  (and on every fired alert), reloading when the shell starts with
+  downtime rendered as empty slots. "Was the machine hot overnight?"
+  survives restarts, reboots, and crashes. Chart captions now cycle
+  2m → 1h → 24h; `span 24h` works over IPC.
+- **Alert context snapshots.** Every logged alert records what the
+  system looked like the moment it fired — CPU/RAM/temperature/GPU
+  values and the busiest processes. Click an alert in the ALERTS tab to
+  expand it. The log grew to twenty entries and persists with the
+  recorder.
+- **PWR tab**: measured power draw per source — CPU package and
+  friends via RAPL energy counters (wrap-safe watts from µJ deltas),
+  every GPU, battery discharge — plus session energy totals in Wh.
+  CPU-package watts, GPU watts, and CPU temperature ride the flight
+  recorder too: their charts (PWR draw charts, the CPU tab's
+  temperature chart) zoom to 1h and 24h and survive restarts, so
+  "did power or thermals spike overnight" is answerable in watts and
+  degrees, not just usage. Pre-1.0 history files load with the new
+  series empty.
+  Kernels that keep RAPL root-only (the default since the PLATYPUS
+  mitigation) get an honest hint and a documented one-line udev unlock
+  instead of silence; Argus never asks for privileges itself.
+- The PROC tab became a real process table: the sampler ships the full
+  table (with user and thread count) instead of two top-10 lists, and
+  the panel filters it live (`/` focuses the field; name, user, or pid),
+  sorts by any column (click headers; direction flips on re-click),
+  walks rows with j/k, expands a row (click or Enter) to the full
+  command line, owner, and thread count, and offers Terminate and
+  Kill −9 — both behind the usual confirmation, with `x` as the
+  keyboard shortcut for Terminate on the cursor row.
+- The CPU tab's thread grid is laid out like the silicon: SMT siblings
+  fuse into one core cell, cores group under their L3 domain (CCDs on
+  multi-die parts, with per-CCD live clocks), and hybrid chips draw
+  efficiency cores shorter (rated-ceiling spread, no hardcoded models).
+  Machines without exposed topology keep the flat grid.
+- The MEM tab shows where the memory actually is — an in use / cache /
+  free split bar with free(1)'s accounting and a note that cache is
+  reclaimable — plus a dirty-pages row, and the swap row names its
+  backing ("zram (compressed RAM)", "zram + disk").
+- NET interfaces carry their identity: kind icon (Wi-Fi / Ethernet /
+  virtual), the Wi-Fi SSID, and the IPv4 address, from a panel-only
+  sample (`ip`, `iw` when present).
+
+- **HOME tab**: the panel opens on a configurable overview — a grid of
+  glance tiles (CPU, memory, GPU, network, disk I/O, disk, battery),
+  each with its live value, a subline, and a sparkline or meter that
+  follows the 2m/1h/24h span. Click a tile to open its tab; pick tiles
+  in the BAR tab. The last fired alert shows beneath, linking to
+  ALERTS.
+- The ALERTS tab lists the per-sensor alerts armed from the TEMP tab —
+  with live readings, thresholds, and one-click removal — so it is the
+  single complete view of everything armed.
+- PWR tab draw charts: CPU-package and GPU power sparklines with
+  session peaks.
+- The BAR tab became **SETUP** — the one place for all panel
+  configuration: bar metrics, Home tiles, temperature unit (°C/°F,
+  display-only; Fahrenheit readings carry an explicit °F suffix —
+  measurement, storage, and thresholds stay Celsius), and the refresh
+  interval. `tab BAR` over IPC still works as an alias.
+- Integrated GPUs get plain names — die codenames ("Phoenix1", "Granite
+  Ridge", "Raptor Lake-P") mean nothing to most people: AMD APUs
+  display as "AMD Integrated Graphics", and Intel iGPUs whose lspci
+  string carries no product name display as "Intel Integrated
+  Graphics" (real names like "UHD Graphics 770" or "Arc A770" pass
+  through).
+- Reopening the panel lands on the tab you left (session-scoped); an
+  urgent metric still overrides and lands on its tab.
+- "Open log in nvim" beside the alert log: the flight recorder's raw
+  file, pretty-printed (jq) and read-only, in a terminal via
+  omarchy-launch-or-focus-tui — rings, alerts, and context snapshots
+  in full.
+- The scroll indicator got its own gutter — it no longer overlaps
+  toggles and steppers at the panel's right edge.
+
+### Changed
+- The tab selector became a one-row underline strip: plain text tabs
+  with an accent underline on the active one, hover brightening, and
+  wheel-scroll cycling — eleven tabs in a single calm row where the old
+  bordered chips needed two, handing ~45px back to content.
+- `tests/make-fixture.sh` scrubs the new sections too: the full process
+  table (usernames, command lines) and NETINFO (IP addresses, SSID) are
+  dropped from contributed fixtures.
+- The README leads with what makes Argus different (flight recorder,
+  self-explaining alerts, honesty), ships Hyprland keybind recipes, and
+  every screenshot is refreshed to the 1.0 UI.
+- Intel GPU *usage* stays honestly unavailable: reading it needs
+  `intel_gpu_top` with CAP_PERFMON, and Argus doesn't ask for
+  privileges. Deliberately deferred until an Intel fixture and a tested
+  unprivileged path exist.
+
 ## [0.9.1] — 2026-08-29
 
 ### Fixed

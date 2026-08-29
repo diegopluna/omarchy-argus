@@ -118,6 +118,9 @@ function parseSample(text) {
   var gpuPdev = parseGpuPdev(sections.GPUPDEV || [])
   var nvidiaLines = sections.NVIDIA || []
   var nvidiaSuspended = nvidiaLines.length > 0 && nvidiaLines[0].trim() === "suspended"
+  // 0.10 samples one full PS table; pre-0.10 captures carry the two
+  // top-10 sections instead — accept either.
+  var psAll = parsePs(sections.PS || [])
   return {
     host: (sections.HOST || [""])[0].trim(),
     cpuName: (sections.CPUNAME || [""])[0].trim(),
@@ -139,13 +142,130 @@ function parseSample(text) {
       .concat(parseIntelGpus(sections.GPUINTEL || [], gpuNames))
       .concat(nvidiaSuspended ? [] : parseNvidia(nvidiaLines)),
     nvidiaSuspended: nvidiaSuspended,
-    psCpu: parsePs(sections.PSCPU || []),
-    psMem: parsePs(sections.PSMEM || []),
+    psAll: psAll,
+    psCpu: psAll.length > 0 ? topProcs(psAll, "cpu") : parsePs(sections.PSCPU || []),
+    psMem: psAll.length > 0 ? topProcs(psAll, "mem") : parsePs(sections.PSMEM || []),
+    swaps: parseSwaps(sections.SWAPS || []),
+    power: parseRapl(sections.POWER || []),
+    netInfo: parseNetInfo(sections.NETINFO || []),
+    cpuTopo: parseCpuTopo(sections.CPUTOPO || []),
+    cpuFreq: parseCpuFreq(sections.CPUFREQ || []),
     gpuPdev: gpuPdev,
     gpuProcs: parseGpuProc(sections.GPUPROC || []),
     driveHealth: parseDriveHealth(sections.DRIVEHEALTH || []),
     batteries: parseBattery(sections.BAT || [])
   }
+}
+
+// NETINFO lines (panel-only): iface|kind|ipv4|ssid — ssid last so a "|"
+// in a network name can't shift the other fields.
+function parseNetInfo(lines) {
+  var map = {}
+  for (var i = 0; i < lines.length; i++) {
+    var parts = lines[i].split("|")
+    if (parts.length < 3) continue
+    map[parts[0]] = {
+      kind: parts[1],
+      addr: (parts[2] || "").replace(/\/\d+$/, ""),
+      ssid: parts.slice(3).join("|").trim()
+    }
+  }
+  return map
+}
+
+var NET_KIND_ICONS = { wifi: "\u{f05a9}", eth: "\u{f0200}", virtual: "\u{f06f3}" } // 󰖩 󰈀 󰛳
+
+// "Wi-Fi · MyNetwork · 192.168.0.5" — the identity half of a NET row.
+function netIfaceDetail(info) {
+  if (!info) return ""
+  var parts = []
+  if (info.kind === "wifi") parts.push(info.ssid !== "" ? info.ssid : "Wi-Fi")
+  if (info.addr) parts.push(info.addr)
+  return parts.join(" · ")
+}
+
+// ---- CPU topology --------------------------------------------------------
+// CPUTOPO lines (static): cpu|core_id|l3_shared_list|max_khz. The grid
+// groups SMT siblings into cores and cores into L3 domains (CCDs on
+// multi-die AMD parts). Hybrid chips are detected by rated-ceiling
+// spread: threads under 85% of the fastest are efficiency cores.
+
+function parseCpuTopo(lines) {
+  var result = []
+  for (var i = 0; i < lines.length; i++) {
+    var parts = lines[i].split("|")
+    if (parts.length < 2) continue
+    var cpu = Number(parts[0])
+    if (!isFinite(cpu)) continue
+    result.push({
+      cpu: cpu,
+      core: parts[1] !== "" ? Number(parts[1]) : cpu,
+      l3: (parts[2] || "").trim(),
+      maxKhz: parts.length > 3 ? Number(parts[3]) || 0 : 0
+    })
+  }
+  result.sort(function(a, b) { return a.cpu - b.cpu })
+  return result
+}
+
+// CPUFREQ lines: cpu|cur_khz → { cpu: khz }.
+function parseCpuFreq(lines) {
+  var map = {}
+  for (var i = 0; i < lines.length; i++) {
+    var parts = lines[i].split("|")
+    if (parts.length < 2) continue
+    map[parts[0]] = Number(parts[1]) || 0
+  }
+  return map
+}
+
+// Groups for the CPU tab's core grid: [{ label, cores: [{ cpus, eff }] }].
+// One L3 domain renders unlabeled; several get "CCD n" (AMD's name for
+// them — the multi-L3 case in practice). Returns { groups, smt, hybrid }.
+function cpuTopoGroups(topo) {
+  if (!topo || topo.length === 0) return { groups: [], smt: false, hybrid: false }
+  var peak = 0
+  for (var m = 0; m < topo.length; m++) if (topo[m].maxKhz > peak) peak = topo[m].maxKhz
+  var groups = []
+  var byL3 = {}
+  var smt = false
+  for (var i = 0; i < topo.length; i++) {
+    var t = topo[i]
+    var l3Key = t.l3 !== "" ? t.l3 : "all"
+    if (!(l3Key in byL3)) {
+      byL3[l3Key] = { label: "", cores: [], _byCore: {} }
+      groups.push(byL3[l3Key])
+    }
+    var g = byL3[l3Key]
+    var coreKey = String(t.core)
+    if (!(coreKey in g._byCore)) {
+      g._byCore[coreKey] = { cpus: [], eff: peak > 0 && t.maxKhz > 0 && t.maxKhz < peak * 0.85 }
+      g.cores.push(g._byCore[coreKey])
+    }
+    g._byCore[coreKey].cpus.push(t.cpu)
+    if (g._byCore[coreKey].cpus.length > 1) smt = true
+  }
+  var hybrid = false
+  for (var gi = 0; gi < groups.length; gi++) {
+    delete groups[gi]._byCore
+    if (groups.length > 1) groups[gi].label = "CCD " + gi
+    for (var ci = 0; ci < groups[gi].cores.length; ci++) if (groups[gi].cores[ci].eff) hybrid = true
+  }
+  return { groups: groups, smt: smt, hybrid: hybrid }
+}
+
+// Average current clock of a group's threads, in GHz text ("4.52 GHz").
+function groupFreqText(group, freqs) {
+  if (!group || !freqs) return ""
+  var sum = 0, n = 0
+  for (var i = 0; i < group.cores.length; i++) {
+    for (var j = 0; j < group.cores[i].cpus.length; j++) {
+      var khz = freqs[String(group.cores[i].cpus[j])]
+      if (isFinite(khz) && khz > 0) { sum += khz; n++ }
+    }
+  }
+  if (n === 0) return ""
+  return (sum / n / 1e6).toFixed(2) + " GHz"
 }
 
 // NETPHYS lines are interface names with a backing physical device; used
@@ -261,10 +381,49 @@ function parseMem(lines) {
   }
   return {
     total: values.MemTotal || 0,
+    free: values.MemFree || 0,
     avail: values.MemAvailable || 0,
+    buffers: values.Buffers || 0,
+    cached: values.Cached || 0,
+    sreclaimable: values.SReclaimable || 0,
+    shmem: values.Shmem || 0,
+    dirty: values.Dirty || 0,
     swapTotal: values.SwapTotal || 0,
     swapFree: values.SwapFree || 0
   }
+}
+
+// The classic used / cache / free split (free(1)'s accounting): cache is
+// page cache + buffers + reclaimable slab — memory the kernel hands back
+// under pressure — and used is what remains after free and cache.
+function memBreakdown(mem) {
+  var cache = (mem.buffers || 0) + (mem.cached || 0) + (mem.sreclaimable || 0)
+  var used = Math.max(0, (mem.total || 0) - (mem.free || 0) - cache)
+  return { used: used, cache: cache, free: mem.free || 0, total: mem.total || 0 }
+}
+
+// /proc/swaps body lines: "/dev/zram0 partition size used prio".
+function parseSwaps(lines) {
+  var result = []
+  for (var i = 0; i < lines.length; i++) {
+    var parts = lines[i].trim().split(/\s+/)
+    if (parts.length < 2) continue
+    result.push({ name: parts[0], kind: parts[1] })
+  }
+  return result
+}
+
+// "zram (compressed RAM)" / "zram + disk" / "" — the swap row's aside, so
+// a zram swap isn't mistaken for disk thrash.
+function swapNote(swaps) {
+  var zram = false, disk = false
+  for (var i = 0; i < (swaps || []).length; i++) {
+    if (/zram/.test(swaps[i].name)) zram = true
+    else disk = true
+  }
+  if (zram && disk) return "zram + disk"
+  if (zram) return "zram (compressed RAM)"
+  return ""
 }
 
 function parseLoad(lines) {
@@ -386,15 +545,68 @@ function procDisplay(args) {
   return head.slice(head.lastIndexOf("/") + 1) + tail
 }
 
-// ps axo pid=,pcpu=,pmem=,args= lines; args is last so its spaces survive.
+// ps axo pid=,user:16=,pcpu=,pmem=,nlwp=,args= lines; args is last so its
+// spaces survive. Pre-0.10 four-field lines (pid pcpu pmem args) still
+// parse, for older captures.
 function parsePs(lines) {
   var result = []
   for (var i = 0; i < lines.length; i++) {
-    var match = lines[i].trim().match(/^(\d+)\s+([\d.]+)\s+([\d.]+)\s+(.+)$/)
-    if (!match) continue
-    result.push({ pid: match[1], cpu: Number(match[2]), mem: Number(match[3]), comm: match[4] })
+    var line = lines[i].trim()
+    var match = line.match(/^(\d+)\s+(\S+)\s+([\d.]+)\s+([\d.]+)\s+(\d+)\s+(.+)$/)
+    if (match) {
+      result.push({ pid: match[1], user: match[2], cpu: Number(match[3]), mem: Number(match[4]), threads: Number(match[5]), comm: match[6] })
+      continue
+    }
+    var legacy = line.match(/^(\d+)\s+([\d.]+)\s+([\d.]+)\s+(.+)$/)
+    if (legacy) result.push({ pid: legacy[1], user: "", cpu: Number(legacy[2]), mem: Number(legacy[3]), threads: 0, comm: legacy[4] })
   }
   return result
+}
+
+// ---- Process table -------------------------------------------------------
+// The sampler emits the full table once; sorting, filtering, and the
+// display cap are pure functions here so the panel can re-slice without
+// resampling.
+
+function topProcs(list, key, count) {
+  var sorted = (list || []).slice().sort(function(a, b) { return (b[key] || 0) - (a[key] || 0) })
+  return sorted.slice(0, count || 10)
+}
+
+function filterProcs(list, query) {
+  var q = String(query || "").toLowerCase().trim()
+  if (q === "") return (list || []).slice()
+  var result = []
+  for (var i = 0; i < (list || []).length; i++) {
+    var p = list[i]
+    if ((p.comm + " " + p.user + " " + p.pid).toLowerCase().indexOf(q) !== -1) result.push(p)
+  }
+  return result
+}
+
+var PROC_SORT_KEYS = ["cpu", "mem", "pid", "name"]
+
+function sortProcs(list, key, asc) {
+  var result = (list || []).slice()
+  function val(p) {
+    if (key === "pid") return Number(p.pid)
+    if (key === "name") return procDisplay(p.comm).toLowerCase()
+    return p[key] || 0
+  }
+  result.sort(function(a, b) {
+    var va = val(a), vb = val(b)
+    var cmp = va < vb ? -1 : (va > vb ? 1 : 0)
+    return asc ? cmp : -cmp
+  })
+  return result
+}
+
+// The rows the PROC tab renders: filtered, sorted, capped (a Repeater
+// over the full table would put thousands of items in the scene).
+function visibleProcs(list, query, key, asc, cap) {
+  var rows = sortProcs(filterProcs(list, query), key, asc)
+  var limit = cap || 40
+  return { rows: rows.slice(0, limit), hidden: Math.max(0, rows.length - limit) }
 }
 
 // BAT lines: name|status|capacity|energy_now|energy_full|energy_design|
@@ -507,6 +719,7 @@ function parseGpus(lines, names) {
   for (var i = 0; i < lines.length; i++) {
     var parts = lines[i].split("|")
     if (parts.length < 5) continue
+    var isApu = parts.length > 8 && parts[8].trim() === "1"
     result.push({
       card: parts[0],
       label: "GPU " + parts[0],
@@ -517,8 +730,10 @@ function parseGpus(lines, names) {
       powerW: parts.length > 5 && parts[5] !== "" ? Number(parts[5]) / 1e6 : NaN,
       gttUsed: parts.length > 6 ? Number(parts[6]) || 0 : 0,
       gttTotal: parts.length > 7 ? Number(parts[7]) || 0 : 0,
-      apu: parts.length > 8 && parts[8].trim() === "1",
-      name: prettyGpuName(names && parts[0] in names ? names[parts[0]] : "")
+      apu: isApu,
+      // Nobody recognizes iGPU die codenames ("Phoenix1", "Granite
+      // Ridge"); say what the card is instead.
+      name: isApu ? "AMD Integrated Graphics" : prettyGpuName(names && parts[0] in names ? names[parts[0]] : "")
     })
   }
   return result
@@ -543,6 +758,11 @@ function parseIntelGpus(lines, names) {
   for (var i = 0; i < lines.length; i++) {
     var parts = lines[i].split("|")
     if (parts.length < 3) continue
+    var name = prettyGpuName(names && parts[0] in names ? names[parts[0]] : "")
+    // Intel iGPU lspci names sometimes carry only the die codename
+    // ("Raptor Lake-P"); say what the card is instead. Real product
+    // names (UHD/Iris Xe/Arc) pass through.
+    if (!/graphics|iris|arc|xe|uhd|hd/i.test(name)) name = "Intel Integrated Graphics"
     result.push({
       card: parts[0],
       label: "GPU " + parts[0] + " (Intel)",
@@ -552,7 +772,7 @@ function parseIntelGpus(lines, names) {
       vramTotal: 0,
       celsius: parts[1] !== "" ? Number(parts[1]) / 1000 : NaN,
       powerW: parts[2] !== "" ? Number(parts[2]) / 1e6 : NaN,
-      name: prettyGpuName(names && parts[0] in names ? names[parts[0]] : "")
+      name: name
     })
   }
   return result
@@ -920,6 +1140,74 @@ function toggleHiddenSensor(current, key) {
   return list
 }
 
+// The ALERTS tab's view of the TEMP-tab per-sensor thresholds: one row
+// per armed sensor, resolved against the live sensor list when present
+// (a stored threshold for unplugged hardware still shows, by its key).
+function sensorAlertRows(thresholds, temps) {
+  var byKey = {}
+  for (var i = 0; i < (temps || []).length; i++) byKey[sensorKey(temps[i])] = temps[i]
+  var rows = []
+  for (var key in thresholds) {
+    var t = byKey[key]
+    rows.push({
+      key: key,
+      label: t ? tempName(t) : key.split("|").filter(function(p) { return p !== "" }).join(" · "),
+      now: t ? t.celsius : NaN,
+      limit: thresholds[key]
+    })
+  }
+  rows.sort(function(a, b) { return a.label < b.label ? -1 : (a.label > b.label ? 1 : 0) })
+  return rows
+}
+
+// ---- Home tab ------------------------------------------------------------
+// Overview tiles: one glance, no tab-hopping. The user picks which show
+// (persisted as `homeTiles`, same pattern as the bar's `show`); clicking
+// a tile opens its tab.
+var HOME_TILES = [
+  { key: "cpu",  label: "CPU",      icon: "\u{f0ee0}", tab: "CPU" },
+  { key: "ram",  label: "Memory",   icon: "\u{f035b}", tab: "MEM" },
+  { key: "gpu",  label: "GPU",      icon: "\u{f08ae}", tab: "GPU" },
+  { key: "net",  label: "Network",  icon: "\u{f06f3}", tab: "NET" },
+  { key: "io",   label: "Disk I/O", icon: "\u{f02ca}", tab: "DISK" },
+  { key: "disk", label: "Disk",     icon: "\u{f02ca}", tab: "DISK" },
+  { key: "bat",  label: "Battery",  icon: "\u{f0079}", tab: "BAT" }
+]
+
+var DEFAULT_HOME = ["cpu", "ram", "gpu", "net", "io", "disk"]
+
+function homeTileByKey(key) {
+  for (var i = 0; i < HOME_TILES.length; i++) if (HOME_TILES[i].key === key) return HOME_TILES[i]
+  return null
+}
+
+function normalizeHomeTiles(value) {
+  var list = value instanceof Array ? value : DEFAULT_HOME
+  var result = []
+  for (var i = 0; i < list.length; i++) {
+    if (homeTileByKey(list[i]) !== null && result.indexOf(list[i]) === -1) result.push(list[i])
+  }
+  return result
+}
+
+function toggleHomeTile(current, key) {
+  var list = normalizeHomeTiles(current)
+  var index = list.indexOf(key)
+  if (index >= 0) list.splice(index, 1)
+  else if (homeTileByKey(key) !== null) list.push(key)
+  return list
+}
+
+// Element-wise sum of two equal-cadence history rings (disk R+W).
+function sumHist(a, b) {
+  var result = []
+  var n = Math.max((a || []).length, (b || []).length)
+  for (var i = 0; i < n; i++) {
+    result.push(((a && a[a.length - n + i]) || 0) + ((b && b[b.length - n + i]) || 0))
+  }
+  return result
+}
+
 // The discrete GPU when there is one: the card with the most *dedicated*
 // VRAM. Deliberately not the pooled total — an APU's GTT window is sized
 // off system RAM and would let a 2-CU iGPU outrank a real dGPU.
@@ -994,14 +1282,32 @@ function pushHistory(list, value, max) {
 }
 
 // ---- Tiered history ------------------------------------------------------
-// Behind the per-tick ring sits an hour ring: HISTORY_LEN slots of
-// HOUR_SLOT_SEC seconds, each keeping the *maximum* the series hit in that
-// window — history is for finding spikes, and averaging would erase
-// exactly what you scrolled back to find. All series roll up in one
+// Behind the per-tick ring sit two peak rings: an hour ring (HISTORY_LEN
+// slots of HOUR_SLOT_SEC) and a day ring (same slot count, DAY_SLOT_SEC
+// each — 60 × 24 min = 24 h). Every slot keeps the *maximum* the series
+// hit in its window — history is for finding spikes, and averaging would
+// erase exactly what you scrolled back to find. All series roll up in one
 // object so QML rebinds once per tick.
 
 var HOUR_SLOT_SEC = 60
-var HOUR_KEYS = ["cpu", "mem", "gpu", "netDown", "netUp", "ioRead", "ioWrite"]
+var DAY_SLOT_SEC = 1440
+// cpuPower/gpuPower/cpuTemp joined in 1.0 so power spikes and thermals
+// are answerable over 24h, not just usage; history files from before
+// simply load those series empty.
+var HOUR_KEYS = ["cpu", "mem", "gpu", "netDown", "netUp", "ioRead", "ioWrite", "cpuPower", "gpuPower", "cpuTemp"]
+
+// The sparkline spans and the slot width behind each.
+var SPANS = ["2m", "1h", "24h"]
+
+function nextSpan(span) {
+  return SPANS[(SPANS.indexOf(span) + 1) % SPANS.length]
+}
+
+function spanSlotSec(span, intervalSec) {
+  if (span === "1h") return HOUR_SLOT_SEC
+  if (span === "24h") return DAY_SLOT_SEC
+  return Math.max(1, Number(intervalSec) || 1)
+}
 
 function emptyHourHist() {
   var hour = { since: 0 }
@@ -1009,12 +1315,14 @@ function emptyHourHist() {
   return hour
 }
 
-// Fold one tick's values into the hour rings; when the current slot's
+// Fold one tick's values into a peak ring; when the current slot's
 // wall-clock window closes, its accumulated peak is pushed and a new slot
-// starts. Returns a new object (QML rebind).
-function pushHourHist(hour, values, nowMs) {
+// starts. Returns a new object (QML rebind). slotSec defaults to the
+// hour ring's minute slots.
+function pushHourHist(hour, values, nowMs, slotSec) {
+  var slotMs = (slotSec || HOUR_SLOT_SEC) * 1000
   var next = { since: hour && hour.since ? hour.since : nowMs }
-  var close = nowMs - next.since >= HOUR_SLOT_SEC * 1000
+  var close = nowMs - next.since >= slotMs
   for (var i = 0; i < HOUR_KEYS.length; i++) {
     var key = HOUR_KEYS[i]
     var prev = (hour && hour[key]) || { values: [], acc: NaN }
@@ -1027,6 +1335,92 @@ function pushHourHist(hour, values, nowMs) {
   }
   if (close) next.since = nowMs
   return next
+}
+
+// ---- The flight recorder -------------------------------------------------
+// The hour and day rings (and the alert log) persist to disk once a
+// minute and are reloaded when the shell starts, so Argus still knows
+// what happened before a restart or overnight. Values are rounded on
+// save — peaks, not decimals, are what the rings are for.
+
+var HISTORY_FILE_VERSION = 1
+var ALERT_LOG_CAP = 20
+
+function serializeHistory(hour, day, alerts, nowMs) {
+  function pack(ring) {
+    var out = { since: (ring && ring.since) || 0 }
+    for (var i = 0; i < HOUR_KEYS.length; i++) {
+      var key = HOUR_KEYS[i]
+      var entry = (ring && ring[key]) || { values: [], acc: NaN }
+      out[key] = {
+        values: entry.values.map(function(v) { return Math.round(v) }),
+        acc: isFinite(entry.acc) ? Math.round(entry.acc) : null
+      }
+    }
+    return out
+  }
+  return JSON.stringify({
+    v: HISTORY_FILE_VERSION,
+    savedAt: nowMs,
+    hour: pack(hour),
+    day: pack(day),
+    alerts: (alerts || []).slice(0, ALERT_LOG_CAP)
+  })
+}
+
+// Reopen a persisted peak ring after downtime: the saved partial slot
+// closes, the gap renders as empty slots, and the ring resumes at now.
+function resumeHist(ring, slotSec, nowMs) {
+  var next = emptyHourHist()
+  if (!ring || !ring.since) return next
+  var gapSlots = Math.floor(Math.max(0, nowMs - ring.since) / (slotSec * 1000))
+  for (var i = 0; i < HOUR_KEYS.length; i++) {
+    var key = HOUR_KEYS[i]
+    var prev = ring[key] || { values: [], acc: NaN }
+    var values = prev.values.slice()
+    if (isFinite(prev.acc)) values = pushHistory(values, prev.acc)
+    for (var g = 0; g < Math.min(gapSlots, HISTORY_LEN); g++) values = pushHistory(values, 0)
+    next[key] = { values: values, acc: NaN }
+  }
+  next.since = nowMs
+  return next
+}
+
+// Parse a persisted history file back into live rings, resumed at nowMs.
+// Anything malformed — wrong version, truncated write, hand-edited —
+// falls back to empty rings rather than a broken panel.
+function restoreHistory(text, nowMs) {
+  var empty = { hour: emptyHourHist(), day: emptyHourHist(), alerts: [] }
+  var parsed
+  try { parsed = JSON.parse(text) } catch (e) { return empty }
+  if (!parsed || parsed.v !== HISTORY_FILE_VERSION) return empty
+  function unpack(ring) {
+    var out = emptyHourHist()
+    if (!ring) return out
+    out.since = Number(ring.since) || 0
+    for (var i = 0; i < HOUR_KEYS.length; i++) {
+      var key = HOUR_KEYS[i]
+      var entry = ring[key]
+      if (!entry || !(entry.values instanceof Array)) continue
+      var values = []
+      for (var j = 0; j < entry.values.length && j < HISTORY_LEN; j++) values.push(Number(entry.values[j]) || 0)
+      var acc = entry.acc === null || entry.acc === undefined ? NaN : Number(entry.acc)
+      out[key] = { values: values, acc: isFinite(acc) ? acc : NaN }
+    }
+    return out
+  }
+  var alerts = []
+  if (parsed.alerts instanceof Array) {
+    for (var a = 0; a < parsed.alerts.length && a < ALERT_LOG_CAP; a++) {
+      var alert = parsed.alerts[a]
+      if (alert && isFinite(Number(alert.at)) && typeof alert.text === "string") alerts.push(alert)
+    }
+  }
+  return {
+    hour: resumeHist(unpack(parsed.hour), HOUR_SLOT_SEC, nowMs),
+    day: resumeHist(unpack(parsed.day), DAY_SLOT_SEC, nowMs),
+    alerts: alerts
+  }
 }
 
 // The hour series a sparkline renders: completed slots plus the live
@@ -1079,8 +1473,29 @@ function fmtPct(pct) {
   return isFinite(pct) ? Math.round(pct) + "%" : "—"
 }
 
+// ---- Temperature unit ----------------------------------------------------
+// Display-only: everything is measured, stored, and thresholded in °C;
+// this only flips how temperatures render. Each QML importer holds its
+// own copy of this module, so every importer sets it (cheap, idempotent).
+var tempUnit = "C"
+
+function setTempUnit(unit) {
+  tempUnit = unit === "F" ? "F" : "C"
+}
+
+// The number a Celsius reading displays as in the chosen unit.
+function displayTemp(celsius) {
+  return tempUnit === "F" ? Math.round(celsius * 9 / 5 + 32) : Math.round(celsius)
+}
+
+// "°" in Celsius (the default needs no flag), "°F" in Fahrenheit — the
+// conversion must be visible, not guessed at.
+function tempSuffix() {
+  return tempUnit === "F" ? "°F" : "°"
+}
+
 function fmtTemp(celsius) {
-  return isFinite(celsius) ? Math.round(celsius) + "°" : "—"
+  return isFinite(celsius) ? displayTemp(celsius) + tempSuffix() : "—"
 }
 
 function fmtWatts(watts) {
@@ -1218,9 +1633,10 @@ function stepAlertThreshold(entry, current, delta) {
 }
 
 // "≥ 90%", "≤ 15%", "≥ 90% worn" — the compact threshold caption on an
-// alert row.
+// alert row. Temperature limits render in the display unit.
 function alertLimitText(entry, th) {
   var value = th && isFinite(th[entry.thKey]) ? th[entry.thKey] : DEFAULT_THRESHOLDS[entry.thKey]
+  if (entry.unit === "°") return (entry.low ? "≤ " : "≥ ") + displayTemp(value) + tempSuffix()
   return (entry.low ? "≤ " : "≥ ") + value + entry.unit
 }
 
@@ -1275,6 +1691,102 @@ function alertText(key, data, th) {
     default: value = "—"; limit = ""
   }
   return label + " at " + value + (limit !== "" ? " (threshold " + limit + ")" : "")
+}
+
+// ---- Alert context snapshots ---------------------------------------------
+// What the system looked like the moment an alert fired: headline metric
+// values plus the busiest processes. Persisted with the alert log, so
+// keep it small — short names, rounded numbers.
+
+function alertContext(data, psCpu, psMem) {
+  var procs = []
+  function add(p) {
+    if (!p) return
+    for (var i = 0; i < procs.length; i++) if (procs[i].pid === p.pid) return
+    procs.push({
+      pid: p.pid,
+      n: procDisplay(p.comm).split(" ")[0].slice(0, 24),
+      c: Math.round(p.cpu),
+      m: Math.round(10 * p.mem) / 10
+    })
+  }
+  for (var i = 0; i < Math.min(3, (psCpu || []).length); i++) add(psCpu[i])
+  for (var j = 0; j < Math.min(2, (psMem || []).length); j++) add(psMem[j])
+  return {
+    cpu: Math.round(data.cpuPct || 0),
+    mem: Math.round(data.memPct || 0),
+    cpuTemp: isFinite(data.cpuTemp) ? Math.round(data.cpuTemp) : null,
+    gpu: data.gpu && isFinite(data.gpu.busy) ? Math.round(data.gpu.busy) : null,
+    gpuTemp: data.gpu && isFinite(data.gpu.celsius) ? Math.round(data.gpu.celsius) : null,
+    procs: procs
+  }
+}
+
+// "CPU 97% · RAM 45% · 82° · GPU 3% 46°" — the snapshot's headline.
+function fmtAlertContext(ctx) {
+  if (!ctx) return ""
+  var parts = ["CPU " + ctx.cpu + "%", "RAM " + ctx.mem + "%"]
+  if (ctx.cpuTemp !== null && ctx.cpuTemp !== undefined) parts.push(ctx.cpuTemp + "°")
+  if (ctx.gpu !== null && ctx.gpu !== undefined) {
+    parts.push("GPU " + ctx.gpu + "%" + (ctx.gpuTemp !== null && ctx.gpuTemp !== undefined ? " " + ctx.gpuTemp + "°" : ""))
+  }
+  return parts.join(" · ")
+}
+
+// One snapshot process line: "chromium · 61% · 1.3 GB".
+function fmtAlertProc(p, memTotal) {
+  return p.n + " · " + p.c + "% · " + fmtBytes((Number(memTotal) || 0) * p.m / 100)
+}
+
+// ---- Power (RAPL) --------------------------------------------------------
+// POWER lines: "rapl|name|energy_uj|max_uj" for readable domains —
+// cumulative µJ counters that wrap at max — or "rapl-restricted|name"
+// when the kernel keeps energy_uj root-only (the default since the
+// PLATYPUS mitigation; a udev rule opens it, see the README).
+
+function parseRapl(lines) {
+  var domains = []
+  var restricted = false
+  for (var i = 0; i < lines.length; i++) {
+    var p = lines[i].split("|")
+    if (p[0] === "rapl-restricted") { restricted = true; continue }
+    if (p[0] !== "rapl" || p.length < 4) continue
+    domains.push({ name: p[1], energyUj: Number(p[2]) || 0, maxUj: Number(p[3]) || 0 })
+  }
+  return { domains: domains, restricted: restricted }
+}
+
+// Watts per RAPL domain between two samples; counters wrap at maxUj.
+function raplRates(prev, cur, elapsedSec) {
+  var byName = {}
+  if (prev) for (var i = 0; i < prev.length; i++) byName[prev[i].name] = prev[i]
+  var result = []
+  for (var j = 0; j < (cur || []).length; j++) {
+    var c = cur[j]
+    var p = byName[c.name]
+    var watts = NaN
+    if (p && elapsedSec > 0) {
+      var delta = c.energyUj - p.energyUj
+      if (delta < 0 && c.maxUj > 0) delta += c.maxUj
+      if (delta >= 0) watts = delta / 1e6 / elapsedSec
+    }
+    result.push({ name: c.name, watts: watts })
+  }
+  return result
+}
+
+function raplLabel(name) {
+  if (/^package/.test(name)) return "CPU package"
+  if (name === "core") return "CPU cores"
+  if (name === "uncore") return "CPU uncore"
+  if (/dram/.test(name)) return "Memory (DRAM)"
+  if (/psys/.test(name)) return "Platform"
+  return name
+}
+
+function fmtWh(wh) {
+  if (!isFinite(wh) || wh < 0.05) return ""
+  return (wh >= 10 ? Math.round(wh) : wh.toFixed(1)) + " Wh"
 }
 
 // ---- Alert attribution and history markers -------------------------------
@@ -1387,6 +1899,21 @@ if (typeof module !== "undefined") {
     parseDiskstats: parseDiskstats,
     parseFans: parseFans,
     parsePs: parsePs,
+    topProcs: topProcs,
+    filterProcs: filterProcs,
+    sortProcs: sortProcs,
+    visibleProcs: visibleProcs,
+    PROC_SORT_KEYS: PROC_SORT_KEYS,
+    memBreakdown: memBreakdown,
+    parseSwaps: parseSwaps,
+    swapNote: swapNote,
+    parseNetInfo: parseNetInfo,
+    netIfaceDetail: netIfaceDetail,
+    NET_KIND_ICONS: NET_KIND_ICONS,
+    parseCpuTopo: parseCpuTopo,
+    parseCpuFreq: parseCpuFreq,
+    cpuTopoGroups: cpuTopoGroups,
+    groupFreqText: groupFreqText,
     procDisplay: procDisplay,
     parseBattery: parseBattery,
     parsePsi: parsePsi,
@@ -1432,15 +1959,41 @@ if (typeof module !== "undefined") {
     batteryIcon: batteryIcon,
     pushHistory: pushHistory,
     HOUR_SLOT_SEC: HOUR_SLOT_SEC,
+    DAY_SLOT_SEC: DAY_SLOT_SEC,
     HOUR_KEYS: HOUR_KEYS,
+    SPANS: SPANS,
+    nextSpan: nextSpan,
+    spanSlotSec: spanSlotSec,
     emptyHourHist: emptyHourHist,
     pushHourHist: pushHourHist,
     hourValues: hourValues,
+    HISTORY_FILE_VERSION: HISTORY_FILE_VERSION,
+    ALERT_LOG_CAP: ALERT_LOG_CAP,
+    serializeHistory: serializeHistory,
+    resumeHist: resumeHist,
+    restoreHistory: restoreHistory,
+    alertContext: alertContext,
+    fmtAlertContext: fmtAlertContext,
+    sensorAlertRows: sensorAlertRows,
+    HOME_TILES: HOME_TILES,
+    DEFAULT_HOME: DEFAULT_HOME,
+    homeTileByKey: homeTileByKey,
+    normalizeHomeTiles: normalizeHomeTiles,
+    toggleHomeTile: toggleHomeTile,
+    sumHist: sumHist,
+    fmtAlertProc: fmtAlertProc,
+    parseRapl: parseRapl,
+    raplRates: raplRates,
+    raplLabel: raplLabel,
+    fmtWh: fmtWh,
     fmtBytes: fmtBytes,
     fmtRateShort: fmtRateShort,
     fmtUptime: fmtUptime,
     fmtPct: fmtPct,
     fmtTemp: fmtTemp,
+    setTempUnit: setTempUnit,
+    displayTemp: displayTemp,
+    tempSuffix: tempSuffix,
     fmtWatts: fmtWatts,
     metricValue: metricValue,
     metricUrgent: metricUrgent,

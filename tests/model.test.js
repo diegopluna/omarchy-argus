@@ -159,6 +159,35 @@ assert.strictEqual(Model.gpuMemTotal(oldFormat), 200)
 // Primary ranking stays on dedicated VRAM: a 2-CU iGPU's RAM-sized GTT
 // must not outrank a real dGPU.
 assert.strictEqual(Model.primaryGpu(apuSample.gpus).card, "1")
+// iGPU die codenames mean nothing to most people; APUs get a plain name.
+assert.strictEqual(apuSample.gpus[0].name, "AMD Integrated Graphics")
+assert.notStrictEqual(apuSample.gpus[1].name, "AMD Integrated Graphics", "dGPU keeps its lspci name")
+
+// The ALERTS tab's sensor-alert overview: armed thresholds resolve to
+// live sensors; stale keys still render by their key parts.
+const sensorRows = Model.sensorAlertRows(
+  { "nvme|ADATA FALCON|Composite": 70, "nct6799||SYSTIN": 55, "gone|OLD|x": 90 },
+  [{ chip: "nvme", label: "Composite", celsius: 62, device: "ADATA FALCON" },
+   { chip: "nct6799", label: "SYSTIN", celsius: 36, device: "" }])
+assert.strictEqual(sensorRows.length, 3)
+const nvmeRow = sensorRows.find(r => r.key.startsWith("nvme"))
+assert.strictEqual(nvmeRow.label, "NVMe · ADATA FALCON · Composite")
+assert.strictEqual(nvmeRow.now, 62)
+assert.strictEqual(nvmeRow.limit, 70)
+const staleRow = sensorRows.find(r => r.key.startsWith("gone"))
+assert.strictEqual(staleRow.label, "gone · OLD · x", "unplugged sensor renders by key")
+assert.ok(Number.isNaN(staleRow.now))
+assert.deepStrictEqual(Model.sensorAlertRows({}, []), [])
+
+// Home tiles: same list mechanics as the bar's `show`.
+assert.deepStrictEqual(Model.normalizeHomeTiles(null), Model.DEFAULT_HOME)
+assert.deepStrictEqual(Model.normalizeHomeTiles(["disk", "cpu", "junk", "cpu"]), ["disk", "cpu"])
+assert.deepStrictEqual(Model.toggleHomeTile(["cpu"], "bat"), ["cpu", "bat"])
+assert.deepStrictEqual(Model.toggleHomeTile(["cpu", "bat"], "cpu"), ["bat"])
+Model.HOME_TILES.forEach(t => assert.ok(t.key && t.label && t.icon && t.tab, "tile " + t.key + " complete"))
+assert.deepStrictEqual(Model.sumHist([1, 2, 3], [10, 20, 30]), [11, 22, 33])
+assert.deepStrictEqual(Model.sumHist([2, 3], [10, 20, 30]), [10, 22, 33], "shorter ring aligns to the right edge")
+assert.deepStrictEqual(Model.sumHist([], []), [])
 
 // Runtime-suspended NVIDIA: sampler emits "suspended"; last-known values
 // replay as an asleep card that renders nothing in the bar.
@@ -185,12 +214,109 @@ assert.strictEqual(fans[0].rpm, 1250)
 assert.strictEqual(fans[1].rpm, 0)
 assert.strictEqual(Model.tempName(fans[1]), "GPU · amdgpu")
 
-// Processes: pid pcpu pmem comm, comm keeps its spaces.
-const ps = Model.parsePs([" 155995 46.4  2.5 Isolated Web Co", "  1451  1.9  0.7 Hyprland"])
+// Processes: pid user pcpu pmem nlwp args — args keeps its spaces, and
+// the pre-0.10 four-field shape still parses.
+const ps = Model.parsePs([" 155995 dpeter           46.4  2.5  143 Isolated Web Co", "  1451 root              1.9  0.7   21 Hyprland --flag"])
 assert.strictEqual(ps.length, 2)
 assert.strictEqual(ps[0].comm, "Isolated Web Co")
+assert.strictEqual(ps[0].user, "dpeter")
+assert.strictEqual(ps[0].threads, 143)
 assert.strictEqual(ps[0].cpu, 46.4)
 assert.strictEqual(ps[1].pid, "1451")
+assert.strictEqual(ps[1].comm, "Hyprland --flag")
+const legacyPs = Model.parsePs([" 155995 46.4  2.5 Isolated Web Co"])
+assert.strictEqual(legacyPs[0].comm, "Isolated Web Co")
+assert.strictEqual(legacyPs[0].user, "")
+
+// Process table slicing: filter matches name/user/pid, sorts are stable
+// per key, the cap reports what it hid, and psCpu/psMem derive from the
+// one full table.
+const table = Model.parsePs([
+  "  10 alice  50.0  1.0  4 zen-bin",
+  "  20 bob     5.0 30.0  2 postgres",
+  "  30 alice   1.0  2.0  1 bash",
+  "  40 root    9.0  0.5  8 Xorg"
+])
+assert.strictEqual(Model.filterProcs(table, "alice").length, 2, "filter by user")
+assert.strictEqual(Model.filterProcs(table, "POSTG").length, 1, "filter is case-insensitive")
+assert.strictEqual(Model.filterProcs(table, "40")[0].comm, "Xorg", "filter by pid")
+assert.strictEqual(Model.sortProcs(table, "cpu", false)[0].comm, "zen-bin")
+assert.strictEqual(Model.sortProcs(table, "mem", false)[0].comm, "postgres")
+assert.strictEqual(Model.sortProcs(table, "pid", true)[0].pid, "10")
+assert.strictEqual(Model.sortProcs(table, "name", true)[0].comm, "bash", "name sort uses the display name")
+const cappedProcs = Model.visibleProcs(table, "", "cpu", false, 2)
+assert.strictEqual(cappedProcs.rows.length, 2)
+assert.strictEqual(cappedProcs.hidden, 2)
+assert.strictEqual(Model.visibleProcs(table, "alice", "cpu", false, 40).hidden, 0)
+assert.strictEqual(Model.topProcs(table, "mem", 1)[0].comm, "postgres")
+const psSample = Model.parseSample("###PS\n  10 alice  50.0  1.0  4 zen-bin\n  20 bob     5.0 30.0  2 postgres")
+assert.strictEqual(psSample.psAll.length, 2)
+assert.strictEqual(psSample.psCpu[0].comm, "zen-bin", "psCpu derives from the full table")
+assert.strictEqual(psSample.psMem[0].comm, "postgres")
+
+// Memory breakdown: free(1)'s used/cache/free accounting sums to total.
+const memFx = Model.parseSample(
+  "###MEM\nMemTotal: 1000 kB\nMemFree: 300 kB\nMemAvailable: 600 kB\nBuffers: 50 kB\nCached: 250 kB\nSReclaimable: 100 kB\nDirty: 8 kB\nSwapTotal: 500 kB\nSwapFree: 500 kB").mem
+const split = Model.memBreakdown(memFx)
+assert.strictEqual(split.cache, 400 * 1024)
+assert.strictEqual(split.used, 300 * 1024)
+assert.strictEqual(split.used + split.cache + split.free, split.total)
+assert.strictEqual(memFx.dirty, 8 * 1024)
+
+// Swap kinds: zram flagged so compressed-RAM swap reads as such.
+assert.strictEqual(Model.swapNote(Model.parseSwaps(["/dev/zram0 partition 32010236 0 100"])), "zram (compressed RAM)")
+assert.strictEqual(Model.swapNote(Model.parseSwaps(["/dev/zram0 partition 1 0 100", "/swap/swapfile file 1 0 -2"])), "zram + disk")
+assert.strictEqual(Model.swapNote(Model.parseSwaps(["/dev/sda2 partition 1 0 -2"])), "")
+assert.strictEqual(Model.swapNote([]), "")
+
+// NET identity: kind/IP/SSID per interface; a "|" in an SSID can't shift
+// fields because SSID is the tail.
+const netInfo = Model.parseNetInfo(["eno1|eth|192.168.0.10/24|", "wlp1s0|wifi|10.0.0.5/16|My|Cafe Wi-Fi", "tun0|virtual||"])
+assert.strictEqual(netInfo.eno1.kind, "eth")
+assert.strictEqual(netInfo.eno1.addr, "192.168.0.10", "prefix length stripped")
+assert.strictEqual(netInfo.wlp1s0.ssid, "My|Cafe Wi-Fi")
+assert.strictEqual(Model.netIfaceDetail(netInfo.wlp1s0), "My|Cafe Wi-Fi · 10.0.0.5")
+assert.strictEqual(Model.netIfaceDetail(netInfo.eno1), "192.168.0.10")
+assert.strictEqual(Model.netIfaceDetail(netInfo.tun0), "")
+assert.strictEqual(Model.netIfaceDetail(undefined), "")
+
+// CPU topology: SMT siblings fuse into cores, L3 domains become groups
+// (labeled CCDs when there are several), and a hybrid chip's slow cores
+// are flagged via rated-ceiling spread.
+const topo = Model.parseCpuTopo([
+  "0|0|0-7|5000000", "4|0|0-7|5000000",
+  "1|1|0-7|5000000", "5|1|0-7|5000000",
+  "2|2|8-15|5000000", "6|2|8-15|5000000",
+  "3|3|8-15|5000000", "7|3|8-15|5000000"
+])
+assert.strictEqual(topo.length, 8)
+assert.strictEqual(topo[0].cpu, 0, "sorted numerically")
+const dualCcd = Model.cpuTopoGroups(topo)
+assert.strictEqual(dualCcd.groups.length, 2)
+assert.strictEqual(dualCcd.groups[0].label, "CCD 0")
+assert.strictEqual(dualCcd.groups[0].cores.length, 2)
+assert.deepStrictEqual(dualCcd.groups[0].cores[0].cpus, [0, 4], "SMT siblings share a core cell")
+assert.strictEqual(dualCcd.smt, true)
+assert.strictEqual(dualCcd.hybrid, false)
+const hybridTopo = Model.cpuTopoGroups(Model.parseCpuTopo([
+  "0|0|0-9|5500000", "1|0|0-9|5500000", "2|1|0-9|5500000", "3|1|0-9|5500000",
+  "4|2|0-9|4000000", "5|3|0-9|4000000"
+]))
+assert.strictEqual(hybridTopo.groups.length, 1)
+assert.strictEqual(hybridTopo.groups[0].label, "", "single domain stays unlabeled")
+assert.strictEqual(hybridTopo.hybrid, true)
+assert.strictEqual(hybridTopo.groups[0].cores[2].eff, true, "4.0 GHz core under a 5.5 GHz peak is an E-core")
+assert.strictEqual(hybridTopo.groups[0].cores[0].eff, false)
+assert.strictEqual(Model.cpuTopoGroups([]).groups.length, 0, "no topology, no groups")
+assert.strictEqual(Model.groupFreqText(dualCcd.groups[0], Model.parseCpuFreq(["0|4400000", "4|4600000", "1|4500000", "5|4500000"])), "4.50 GHz")
+assert.strictEqual(Model.groupFreqText(dualCcd.groups[0], {}), "")
+if (!CI) {
+  assert.ok(sample.cpuTopo.length > 1, "live topology parsed")
+  assert.ok(Model.cpuTopoGroups(sample.cpuTopo).groups.length > 0)
+  assert.ok(sample.psAll.length > 20, "live full process table")
+  assert.ok(Object.keys(sample.cpuFreq).length > 1, "live frequencies")
+  assert.ok(sample.swaps.length >= 0)
+}
 
 // Batteries: energies in µWh, power in µW; desktops parse to an empty list
 // and a null summary (this machine's mouse battery is filtered by scope).
@@ -401,6 +527,11 @@ assert.strictEqual(intel[0].celsius, 45)
 assert.strictEqual(intel[0].powerW, 8)
 assert.ok(Number.isNaN(intel[0].busy) && intel[0].noBusyCounter)
 assert.ok(Number.isNaN(intel[1].celsius))
+assert.strictEqual(intel[1].name, "Intel Integrated Graphics", "nameless Intel card gets a plain name")
+assert.strictEqual(Model.parseIntelGpus(["3|1000|"], { "3": "Intel Corporation Raptor Lake-P (rev 4)" })[0].name,
+  "Intel Integrated Graphics", "codename-only lspci gets the plain name")
+assert.strictEqual(Model.parseIntelGpus(["4|1000|"], { "4": "Intel Corporation [UHD Graphics 770]" })[0].name,
+  "UHD Graphics 770", "real product names pass through")
 assert.strictEqual(Model.metricValue("gpu", { gpu: intel[0] }), "", "no busy → bar segment hidden")
 const intelSample = Model.parseSample("###GPUINTEL\n0|41000|5500000\n###NVIDIA\n")
 assert.strictEqual(intelSample.gpus.length, 1)
@@ -541,6 +672,110 @@ for (let i = 0; i < Model.HISTORY_LEN + 5; i++) {
 }
 assert.strictEqual(Model.hourValues(hourCap, "cpu").length, Model.HISTORY_LEN)
 assert.deepStrictEqual(Model.hourValues(Model.emptyHourHist(), "cpu"), [], "empty ring renders empty")
+
+// The day ring is the same machinery at a wider slot; spans cycle and
+// resolve to their slot widths.
+let day = Model.emptyHourHist()
+day = Model.pushHourHist(day, { cpu: 40, mem: 0, gpu: 0, netDown: 0, netUp: 0, ioRead: 0, ioWrite: 0 }, t0, Model.DAY_SLOT_SEC)
+day = Model.pushHourHist(day, { cpu: 10, mem: 0, gpu: 0, netDown: 0, netUp: 0, ioRead: 0, ioWrite: 0 }, t0 + 120000, Model.DAY_SLOT_SEC)
+assert.deepStrictEqual(day.cpu.values, [], "2 minutes doesn't close a 24-minute slot")
+assert.strictEqual(day.cpu.acc, 40)
+day = Model.pushHourHist(day, { cpu: 5, mem: 0, gpu: 0, netDown: 0, netUp: 0, ioRead: 0, ioWrite: 0 }, t0 + Model.DAY_SLOT_SEC * 1000 + 1000, Model.DAY_SLOT_SEC)
+assert.deepStrictEqual(day.cpu.values, [40], "slot closed with its peak")
+assert.strictEqual(Model.DAY_SLOT_SEC * Model.HISTORY_LEN, 86400, "60 day slots span 24h")
+assert.strictEqual(Model.nextSpan("2m"), "1h")
+assert.strictEqual(Model.nextSpan("24h"), "2m", "span cycle wraps")
+assert.strictEqual(Model.spanSlotSec("1h", 2), Model.HOUR_SLOT_SEC)
+assert.strictEqual(Model.spanSlotSec("24h", 2), Model.DAY_SLOT_SEC)
+assert.strictEqual(Model.spanSlotSec("2m", 2), 2)
+
+// The flight recorder: serialize → restore round-trips the rings and
+// alert log, renders downtime as empty slots, and refuses malformed or
+// wrong-version files.
+{
+  const tick = c => ({ cpu: c, mem: 0, gpu: 0, netDown: 0, netUp: 0, ioRead: 0, ioWrite: 0 })
+  let ring = Model.emptyHourHist()
+  ring = Model.pushHourHist(ring, tick(70), t0)          // opens the first slot
+  ring = Model.pushHourHist(ring, tick(20), t0 + 61000)  // closes it (peak 70)
+  ring = Model.pushHourHist(ring, tick(33), t0 + 62000)  // partial slot, acc 33
+  const alerts = [{ at: t0, key: "cpu", text: "CPU usage at 99% (threshold 90%)", ctx: { cpu: 99, mem: 40, cpuTemp: 80, gpu: null, gpuTemp: null, procs: [{ pid: "1", n: "zen-bin", c: 61, m: 3.2 }] } }]
+  const json = Model.serializeHistory(ring, day, alerts, t0 + 62000)
+  // Restored three hour-slots after the last slot opened: the saved
+  // partial closes as its own slot, the rest of the gap renders empty.
+  const back = Model.restoreHistory(json, t0 + 61000 + 3 * Model.HOUR_SLOT_SEC * 1000 + 1000)
+  assert.deepStrictEqual(back.hour.cpu.values, [70, 33, 0, 0, 0], "closed slot + saved partial + gap slots")
+  assert.ok(Number.isNaN(back.hour.cpu.acc), "resumed ring starts a fresh slot")
+  assert.strictEqual(back.alerts.length, 1)
+  assert.strictEqual(back.alerts[0].ctx.procs[0].n, "zen-bin", "alert context round-trips")
+  assert.deepStrictEqual(Model.restoreHistory("not json", 0).alerts, [], "garbage falls back to empty")
+  // Power and temperature ride the same rings; files from before those
+  // keys existed load with the new series simply empty.
+  assert.ok(Model.HOUR_KEYS.includes("cpuPower") && Model.HOUR_KEYS.includes("gpuPower") && Model.HOUR_KEYS.includes("cpuTemp"))
+  let pring = Model.emptyHourHist()
+  pring = Model.pushHourHist(pring, { cpu: 1, mem: 0, gpu: 0, netDown: 0, netUp: 0, ioRead: 0, ioWrite: 0, cpuPower: 45, gpuPower: 220, cpuTemp: 71 }, t0)
+  pring = Model.pushHourHist(pring, { cpu: 1, mem: 0, gpu: 0, netDown: 0, netUp: 0, ioRead: 0, ioWrite: 0, cpuPower: 30, gpuPower: 40, cpuTemp: 60 }, t0 + 61000)
+  assert.deepStrictEqual(pring.gpuPower.values, [220], "gpu watts keep their slot peak")
+  assert.deepStrictEqual(pring.cpuTemp.values, [71])
+  const oldFile = JSON.stringify({ v: 1, savedAt: t0, hour: { since: t0, cpu: { values: [5], acc: null } }, day: { since: t0 }, alerts: [] })
+  const oldBack = Model.restoreHistory(oldFile, t0 + 61000)
+  assert.deepStrictEqual(oldBack.hour.cpu.values, [5, 0], "pre-power file loads")
+  assert.ok(Model.hourValues(oldBack.hour, "cpuPower").every(v => v === 0), "new series starts with only empty slots")
+  assert.deepStrictEqual(Model.restoreHistory(JSON.stringify({ v: 99 }), 0).day.cpu.values, [], "future version ignored")
+  // A gap longer than the whole ring flushes it to empty slots.
+  const flushed = Model.restoreHistory(json, t0 + 10 * 86400000)
+  assert.ok(flushed.hour.cpu.values.length > 0 && flushed.hour.cpu.values.every(v => v === 0), "week-long gap empties the hour ring")
+}
+
+// Alert context snapshots: dedup by pid, short names, rounded values.
+const ctx = Model.alertContext(
+  { cpuPct: 97.4, memPct: 45.2, cpuTemp: 82.6, gpu: { busy: 3, celsius: 46 } },
+  Model.parsePs([" 10 u 61.0  3.2  9 /usr/lib/chromium/chromium --type=x", " 11 u 20.0  1.0  2 make"]),
+  Model.parsePs([" 12 u  1.0 12.5  3 /usr/lib/zen/zen-bin", " 10 u 61.0  3.2  9 /usr/lib/chromium/chromium --type=x"]))
+assert.strictEqual(ctx.cpu, 97)
+assert.strictEqual(ctx.cpuTemp, 83)
+assert.strictEqual(ctx.procs.length, 3, "pid 10 deduped across the two lists")
+assert.strictEqual(ctx.procs[0].n, "chromium")
+assert.strictEqual(Model.fmtAlertContext(ctx), "CPU 97% · RAM 45% · 83° · GPU 3% 46°")
+assert.strictEqual(Model.fmtAlertContext({ cpu: 50, mem: 20, cpuTemp: null, gpu: null }), "CPU 50% · RAM 20%")
+assert.strictEqual(Model.fmtAlertContext(null), "")
+assert.strictEqual(Model.fmtAlertProc({ n: "zen-bin", c: 61, m: 10 }, 32 * 1073741824), "zen-bin · 61% · 3.2 GB")
+
+// RAPL: readable domains parse, restricted kernels are flagged, watts
+// come from µJ deltas and survive counter wrap.
+const rapl = Model.parseRapl(["rapl|package-0|1000000|262143328850", "rapl|core|500000|262143328850"])
+assert.strictEqual(rapl.domains.length, 2)
+assert.strictEqual(rapl.restricted, false)
+const locked = Model.parseRapl(["rapl-restricted|package-0", "rapl-restricted|core"])
+assert.strictEqual(locked.domains.length, 0)
+assert.strictEqual(locked.restricted, true)
+const raplNow = [{ name: "package-0", energyUj: 1000000 + 45e6, maxUj: 262143328850 }]
+const watts = Model.raplRates(rapl.domains, raplNow, 2)
+assert.ok(Math.abs(watts[0].watts - 22.5) < 0.01, "45 J over 2 s = 22.5 W")
+const wrapped = Model.raplRates(
+  [{ name: "package-0", energyUj: 262143328850 - 1e6, maxUj: 262143328850 }],
+  [{ name: "package-0", energyUj: 1e6, maxUj: 262143328850 }], 1)
+assert.ok(Math.abs(wrapped[0].watts - 2) < 0.01, "wrap-around delta")
+assert.ok(Number.isNaN(Model.raplRates(null, raplNow, 2)[0].watts), "no prev, no rate")
+assert.strictEqual(Model.raplLabel("package-0"), "CPU package")
+assert.strictEqual(Model.raplLabel("dram"), "Memory (DRAM)")
+assert.strictEqual(Model.fmtWh(3.14), "3.1 Wh")
+assert.strictEqual(Model.fmtWh(0), "")
+
+// Temperature unit is display-only: storage and thresholds stay °C, and
+// Fahrenheit says so with an explicit °F suffix.
+Model.setTempUnit("F")
+assert.strictEqual(Model.fmtTemp(100), "212°F")
+assert.strictEqual(Model.displayTemp(85), 185)
+assert.strictEqual(Model.tempSuffix(), "°F")
+assert.strictEqual(Model.alertLimitText(Model.alertSettingByKey("cputemp"), Model.thresholdsFrom({})), "≥ 185°F")
+assert.strictEqual(Model.alertLimitText(Model.alertSettingByKey("cpu"), Model.thresholdsFrom({})), "≥ 90%", "percent limits untouched")
+Model.setTempUnit("bogus")
+assert.strictEqual(Model.fmtTemp(50), "50°", "unknown unit falls back to Celsius")
+assert.strictEqual(Model.tempSuffix(), "°")
+if (!CI) {
+  const livePower = Model.parseSample(execSync("bash " + script + " dynamic").toString()).power
+  assert.ok(livePower.domains.length > 0 || livePower.restricted, "live RAPL present or honestly restricted")
+}
 
 // Per-process GPU: fdinfo clients dedupe, aggregate per (pid, card), and
 // derive usage from cumulative engine-time deltas.

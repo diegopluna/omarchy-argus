@@ -32,13 +32,12 @@ rtrim() {
 }
 
 emit_ps() {
+  # The full process table, one ps call; the model sorts/filters/caps it.
   # args= instead of comm=: comm truncates at 15 chars ("Isolated Web Co");
-  # cut keeps browser-length command lines bounded.
-  echo '###PSCPU'
-  ps axo pid=,pcpu=,pmem=,args= --sort=-pcpu 2>/dev/null | head -n 10 | cut -c1-140
-
-  echo '###PSMEM'
-  ps axo pid=,pcpu=,pmem=,args= --sort=-pmem 2>/dev/null | head -n 10 | cut -c1-140
+  # cut keeps browser-length command lines bounded. user:16 fixed-width so
+  # spaces in args stay unambiguous; nlwp is the thread count.
+  echo '###PS'
+  ps axo pid=,user:16=,pcpu=,pmem=,nlwp=,args= --sort=-pcpu 2>/dev/null | cut -c1-170
 }
 
 if [ "$mode" = "ps" ]; then
@@ -123,6 +122,19 @@ if [ "$mode" != "dynamic" ]; then
     [ -d "$d" ] || continue
     echo "${c##*/card}|$(basename "$(readlink -f "$d")" 2>/dev/null)"
   done
+
+  # Thread topology, for the CPU tab's core grid: which threads share a
+  # core (SMT siblings), which cores share an L3 slice (CCDs on Zen,
+  # clusters elsewhere), and each thread's rated ceiling (separates P/E
+  # cores on hybrid chips). Lines: cpu|core_id|l3_shared_list|max_khz
+  echo '###CPUTOPO'
+  for c in /sys/devices/system/cpu/cpu[0-9]*; do
+    n=${c##*/cpu}
+    core=""; rline "$c/topology/core_id" && core=$REPLY
+    l3=""; rline "$c/cache/index3/shared_cpu_list" && l3=$REPLY
+    maxf=""; rline "$c/cpufreq/cpuinfo_max_freq" && maxf=$REPLY
+    echo "$n|$core|$l3|$maxf"
+  done
 fi
 
 [ "$mode" = "static" ] && exit 0
@@ -131,12 +143,41 @@ echo '###STAT'
 grep '^cpu' /proc/stat
 
 echo '###MEM'
-grep -E '^(MemTotal|MemAvailable|SwapTotal|SwapFree):' /proc/meminfo
+grep -E '^(MemTotal|MemFree|MemAvailable|Buffers|Cached|SReclaimable|Shmem|Dirty|SwapTotal|SwapFree):' /proc/meminfo
+
+echo '###SWAPS'
+tail -n +2 /proc/swaps 2>/dev/null
 
 echo '###LOAD'
 rline /proc/loadavg && echo "$REPLY"
 rline /proc/uptime && echo "$REPLY"
 awk -F: '/^cpu MHz/ { s += $2; n++ } END { if (n) printf "%d\n", s / n }' /proc/cpuinfo
+
+echo '###CPUFREQ'
+for f in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq; do
+  [ -r "$f" ] || continue
+  rline "$f" || continue
+  c=${f%/cpufreq/scaling_cur_freq}
+  echo "${c##*/cpu}|$REPLY"
+done
+
+echo '###POWER'
+# RAPL energy counters (cumulative µJ). Kernels since the PLATYPUS
+# mitigation keep energy_uj root-only by default; emit a restricted
+# marker so the panel can hint at the udev unlock instead of showing
+# nothing.
+for d in /sys/class/powercap/intel-rapl*; do
+  [ -e "$d/name" ] || continue
+  rline "$d/name" || continue
+  name=$REPLY
+  if [ -r "$d/energy_uj" ] && rline "$d/energy_uj"; then
+    e=$REPLY
+    max=""; rline "$d/max_energy_range_uj" && max=$REPLY
+    echo "rapl|$name|$e|$max"
+  else
+    echo "rapl-restricted|$name"
+  fi
+done
 
 echo '###NET'
 tail -n +3 /proc/net/dev
@@ -283,6 +324,24 @@ fi
 # always-on bar tick.
 if [ "$mode" = "all" ] || [ "$panel" = "panel" ]; then
   emit_ps
+
+  # Interface identity for the NET tab: kind, IPv4, and Wi-Fi SSID.
+  # Panel-only — the bar needs rates, not addresses. SSID last so a "|"
+  # in a network name can't shift the other fields.
+  echo '###NETINFO'
+  for n in /sys/class/net/*; do
+    i=${n##*/}
+    [ "$i" = "lo" ] && continue
+    kind="virtual"
+    if [ -d "$n/wireless" ]; then kind="wifi"
+    elif [ -e "$n/device" ]; then kind="eth"; fi
+    addr=$(timeout 2 ip -4 -o addr show dev "$i" 2>/dev/null | awk '{print $4; exit}')
+    ssid=""
+    if [ "$kind" = "wifi" ] && command -v iw >/dev/null 2>&1; then
+      ssid=$(timeout 2 iw dev "$i" info 2>/dev/null | awk '$1 == "ssid" { $1=""; sub(/^ /,""); print; exit }')
+    fi
+    echo "$i|$kind|$addr|$ssid"
+  done
 
   # Per-process GPU clients from DRM fdinfo (amdgpu, i915/xe, nouveau —
   # any driver that implements the drm-usage-stats spec). One gawk pass

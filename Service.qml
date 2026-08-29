@@ -18,6 +18,11 @@ Singleton {
   // Pushed by each widget instance; all surfaces share one shell.json
   // entry so the values are identical.
   property var settings: ({})
+  onSettingsChanged: Model.setTempUnit(settings ? settings.tempUnit : "C")
+
+  // The tab the panel was last on; reopening lands there (session-scoped
+  // — persisting it would write shell.json on every tab switch).
+  property string lastTab: "HOME"
 
   readonly property int intervalSec: {
     var value = Number(settings && settings.intervalSec)
@@ -82,6 +87,12 @@ Singleton {
   property var ioDisks: []
   property var psCpu: []
   property var psMem: []
+  property var psAll: []
+  property var netInfo: ({})
+  property var memInfo: ({})
+  property var swaps: []
+  property var cpuTopo: []
+  property var cpuFreq: ({})
   property var batteries: []
   property var battery: null
   property bool ready: false
@@ -109,9 +120,26 @@ Singleton {
   property var ioReadHist: []
   property var ioWriteHist: []
 
-  // Hour-scale rings behind the fine ones: one peak per minute, all
-  // series in one object (see Model.pushHourHist).
+  // Hour- and day-scale rings behind the fine ones: one peak per minute
+  // (or per 24-minute slot), all series in one object (see
+  // Model.pushHourHist). Both persist to disk — the flight recorder.
   property var hourHist: Model.emptyHourHist()
+  property var dayHist: Model.emptyHourHist()
+
+  // RAPL power: per-domain watts, whether the kernel keeps the counters
+  // root-only, and session energy integrals.
+  property var raplWatts: []
+  property bool raplRestricted: false
+  property var _prevRapl: null
+  property real cpuEnergyWh: 0
+  property real gpuEnergyWh: 0
+  // Fine rings for the PWR tab's draw charts and the CPU tab's
+  // temperature chart (their 1h/24h tiers live in the recorder rings).
+  property var cpuPowerHist: []
+  property var gpuPowerHist: []
+  property var cpuTempHist: []
+  property real peakCpuPower: 0
+  property real peakGpuPower: 0
 
   // The last few fired alerts, newest first: { at: epoch ms, key, text }.
   // Notifications vanish; this answers "did anything trip while I was
@@ -202,10 +230,16 @@ Singleton {
     disks = parsed.disks
     temps = parsed.temps
     fans = parsed.fans
-    // Process lists are panel-only samples; keep the last snapshot while
-    // the panel is closed instead of blanking the PROC tab.
+    memInfo = parsed.mem
+    swaps = parsed.swaps
+    cpuTopo = parsed.cpuTopo
+    cpuFreq = parsed.cpuFreq
+    // Process lists and interface identity are panel-only samples; keep
+    // the last snapshot while the panel is closed instead of blanking.
     if (parsed.psCpu.length > 0) psCpu = parsed.psCpu
     if (parsed.psMem.length > 0) psMem = parsed.psMem
+    if (parsed.psAll.length > 0) psAll = parsed.psAll
+    if (Object.keys(parsed.netInfo).length > 0) netInfo = parsed.netInfo
     gpuPdev = parsed.gpuPdev
     if (parsed.gpuProcs.length > 0) {
       var gpuElapsed = _prevGpuProcAt > 0 ? (now - _prevGpuProcAt) / 1000 : 0
@@ -231,18 +265,50 @@ Singleton {
     primaryGpu = Model.primaryGpu(allGpus)
     cpuTempC = Model.cpuTemp(parsed.temps)
 
+    // RAPL watts from cumulative-energy deltas, session energy, and the
+    // draw fine rings — before the history push below, so this tick's
+    // power lands in the recorder too.
+    raplRestricted = parsed.power.restricted
+    if (hadPrev && elapsedSec > 0) {
+      raplWatts = Model.raplRates(_prevRapl, parsed.power.domains, elapsedSec)
+      for (var w = 0; w < raplWatts.length; w++) {
+        if (/^package/.test(raplWatts[w].name) && isFinite(raplWatts[w].watts)) {
+          cpuEnergyWh += raplWatts[w].watts * elapsedSec / 3600
+        }
+      }
+      if (primaryGpu && isFinite(primaryGpu.powerW) && primaryGpu.powerW > 0) {
+        gpuEnergyWh += primaryGpu.powerW * elapsedSec / 3600
+      }
+      var gpuPowerNow = primaryGpu && isFinite(primaryGpu.powerW) && primaryGpu.powerW > 0 ? primaryGpu.powerW : 0
+      gpuPowerHist = Model.pushHistory(gpuPowerHist, gpuPowerNow)
+      if (gpuPowerNow > peakGpuPower) peakGpuPower = gpuPowerNow
+      var cpuPowerNow = 0
+      for (var cw = 0; cw < raplWatts.length; cw++) {
+        if (/^package/.test(raplWatts[cw].name) && isFinite(raplWatts[cw].watts)) cpuPowerNow = raplWatts[cw].watts
+      }
+      cpuPowerHist = Model.pushHistory(cpuPowerHist, cpuPowerNow)
+      if (cpuPowerNow > peakCpuPower) peakCpuPower = cpuPowerNow
+    }
+    _prevRapl = parsed.power.domains
+
     if (hadPrev) {
       cpuHist = Model.pushHistory(cpuHist, cpuPct)
+      cpuTempHist = Model.pushHistory(cpuTempHist, isFinite(cpuTempC) ? cpuTempC : 0)
       memHist = Model.pushHistory(memHist, memPct)
       gpuHist = Model.pushHistory(gpuHist, primaryGpu ? primaryGpu.busy : 0)
       netDownHist = Model.pushHistory(netDownHist, netDown)
       netUpHist = Model.pushHistory(netUpHist, netUp)
       ioReadHist = Model.pushHistory(ioReadHist, ioRead)
       ioWriteHist = Model.pushHistory(ioWriteHist, ioWrite)
-      hourHist = Model.pushHourHist(hourHist, {
+      var tickValues = {
         cpu: cpuPct, mem: memPct, gpu: primaryGpu ? primaryGpu.busy : 0,
-        netDown: netDown, netUp: netUp, ioRead: ioRead, ioWrite: ioWrite
-      }, now)
+        netDown: netDown, netUp: netUp, ioRead: ioRead, ioWrite: ioWrite,
+        cpuPower: cpuPowerHist.length > 0 ? cpuPowerHist[cpuPowerHist.length - 1] : 0,
+        gpuPower: gpuPowerHist.length > 0 ? gpuPowerHist[gpuPowerHist.length - 1] : 0,
+        cpuTemp: isFinite(cpuTempC) ? cpuTempC : 0
+      }
+      hourHist = Model.pushHourHist(hourHist, tickValues, now)
+      dayHist = Model.pushHourHist(dayHist, tickValues, now, Model.DAY_SLOT_SEC)
       if (netDown > peakNetDown) peakNetDown = netDown
       if (netUp > peakNetUp) peakNetUp = netUp
       if (ioRead > peakIoRead) peakIoRead = ioRead
@@ -250,6 +316,7 @@ Singleton {
     }
     if (isFinite(cpuTempC) && !(cpuTempC <= peakCpuTemp)) peakCpuTemp = cpuTempC
     if (primaryGpu && isFinite(primaryGpu.celsius) && !(primaryGpu.celsius <= peakGpuTemp)) peakGpuTemp = primaryGpu.celsius
+
 
     _prevCpus = parsed.cpus
     _prevNet = parsed.net
@@ -350,7 +417,10 @@ Singleton {
     for (var i = 0; i < pending.length; i++) {
       var a = pending[i]
       var attribution = Model.attributionFor(a.key, cpuList, memList, memTotal)
-      _deliverAlert(a.at, a.key, a.critical, a.text + (attribution !== "" ? " — " + attribution : ""))
+      // Snapshot what the system looked like at this moment; the log
+      // entry keeps it so "what happened at 3am" stays answerable.
+      var ctx = Model.alertContext(barData, cpuList, memList)
+      _deliverAlert(a.at, a.key, a.critical, a.text + (attribution !== "" ? " — " + attribution : ""), ctx)
     }
   }
 
@@ -361,9 +431,12 @@ Singleton {
   readonly property string alertCommand: settings && typeof settings.alertCommand === "string"
     ? settings.alertCommand : ""
 
-  // Every fired alert flows through here: log entry, notification, hook.
-  function _deliverAlert(at, key, critical, text) {
-    alertLog = [{ at: at, key: key, text: text }].concat(alertLog).slice(0, 10)
+  // Every fired alert flows through here: log entry (with its context
+  // snapshot), notification, hook, and an immediate history save so the
+  // alert survives a shell restart.
+  function _deliverAlert(at, key, critical, text, ctx) {
+    alertLog = [{ at: at, key: key, text: text, ctx: ctx || null }].concat(alertLog).slice(0, Model.ALERT_LOG_CAP)
+    _saveHistory()
     Quickshell.execDetached([
       "notify-send", "-a", "Argus", "-u", critical ? "critical" : "normal",
       "Argus", text
@@ -402,6 +475,55 @@ Singleton {
     repeat: true
     triggeredOnStart: true
     onTriggered: root.refresh()
+  }
+
+  // ---- The flight recorder --------------------------------------------
+  // The hour/day peak rings and the alert log persist to
+  // $XDG_STATE_HOME/argus/history.json — written once a minute (and on
+  // every fired alert), reloaded at shell start with the downtime gap
+  // rendered as empty slots. Losing the last minute on a crash is the
+  // accepted cost of never writing on the hot path.
+  readonly property string stateDir: {
+    var xdg = Quickshell.env("XDG_STATE_HOME")
+    var home = Quickshell.env("HOME")
+    return (xdg && xdg !== "" ? xdg : home + "/.local/state") + "/argus"
+  }
+  readonly property string historyPath: stateDir + "/history.json"
+
+  function _saveHistory() {
+    if (!ready) return
+    var json = Model.serializeHistory(hourHist, dayHist, alertLog, Date.now())
+    // The JSON travels as an argv element — no shell interpretation —
+    // and lands via a tmp-file rename so a crash mid-write can't leave
+    // a truncated history behind.
+    Quickshell.execDetached(["bash", "-c",
+      'mkdir -p "$1" && printf %s "$2" > "$1/.history.tmp" && mv "$1/.history.tmp" "$1/history.json"',
+      "argus-history", stateDir, json])
+  }
+
+  Timer {
+    interval: 60000
+    running: root.ready
+    repeat: true
+    onTriggered: root._saveHistory()
+  }
+
+  Process {
+    id: historyProc
+    command: ["cat", root.historyPath]
+    running: true
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (text.trim() === "") return
+        var restored = Model.restoreHistory(text, Date.now())
+        root.hourHist = restored.hour
+        root.dayHist = restored.day
+        if (restored.alerts.length > 0) {
+          root.alertLog = root.alertLog.concat(restored.alerts).slice(0, Model.ALERT_LOG_CAP)
+        }
+      }
+    }
   }
 
   Process {
@@ -468,6 +590,7 @@ Singleton {
         var parsed = Model.parseSample(text)
         if (parsed.psCpu.length > 0) root.psCpu = parsed.psCpu
         if (parsed.psMem.length > 0) root.psMem = parsed.psMem
+        if (parsed.psAll.length > 0) root.psAll = parsed.psAll
         root._flushPendingAlerts(parsed.psCpu, parsed.psMem)
       }
     }

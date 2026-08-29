@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "io.github.diegopluna.argus",
   "name": "Argus",
-  "version": "0.9.1",
+  "version": "1.0.0",
   "author": "Diego Peter",
   "license": "MIT",
-  "description": "CPU, RAM, GPU, disk, network, battery, and temperature stats in the bar, with a full system panel: 2m/1h sparkline history with alert markers, per-metric opt-in alerts that name the offending process, per-process GPU usage, drive SMART health, and an alert hook for automation.",
+  "description": "CPU, RAM, GPU, disk, network, battery, power, and temperature stats in the bar, with a full system panel: 2m/1h/24h history that survives restarts (the flight recorder), per-metric opt-in alerts with context snapshots of the moment they fired, a filterable sortable process table, per-process GPU usage, drive SMART health, and an alert hook for automation.",
   "kinds": [
     "bar-widget"
   ],
@@ -21,15 +21,6 @@
       "diskMount": "/"
     },
     "schema": [
-      {
-        "key": "intervalSec",
-        "type": "integer",
-        "label": "Refresh interval (seconds)",
-        "min": 1,
-        "max": 60,
-        "step": 1,
-        "defaultValue": 2
-      },
       {
         "key": "diskMount",
         "type": "string",
