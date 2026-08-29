@@ -2,6 +2,7 @@ pragma Singleton
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import qs.Commons
 import "Model.js" as Model
 
 // Shared system-monitor state: polls sample.sh on a timer and exposes
@@ -529,6 +530,49 @@ Singleton {
     running: root.ready
     repeat: true
     onTriggered: root._saveHistory()
+  }
+
+  // ---- In-game HUD (MangoHud) -----------------------------------------
+  // Argus owns a dedicated config file (never the user's MangoHud.conf)
+  // and re-renders it whenever the GAME-tab settings or the shell theme
+  // change; `mangohudctl reload-cfg` restyles any running game live.
+  readonly property var mango: Model.normalizeMango(settings ? settings.mangoHud : null)
+  readonly property string mangoConfPath: stateDir + "/mangohud.conf"
+  property bool mangohudInstalled: false
+  // The shell session's env is the best available proxy for whether
+  // games will inherit the global-injection variables.
+  readonly property bool mangoInjectionReady:
+    Quickshell.env("MANGOHUD") === "1" && Quickshell.env("MANGOHUD_CONFIGFILE") === mangoConfPath
+
+  readonly property string mangoConf: Model.mangohudConfig(mango, {
+    text: Model.mangoColor(Color.foreground),
+    background: Model.mangoColor(Color.background),
+    accent: Model.mangoColor(Color.accent),
+    urgent: Model.mangoColor(Color.bar.active)
+  })
+
+  onMangoConfChanged: _writeMangoConf()
+
+  function _writeMangoConf() {
+    Quickshell.execDetached(["bash", "-c",
+      'mkdir -p "$1" && printf %s "$2" > "$1/.mangohud.tmp" && mv "$1/.mangohud.tmp" "$1/mangohud.conf"; command -v mangohudctl >/dev/null && mangohudctl reload-cfg',
+      "argus-mangohud", stateDir, mangoConf])
+  }
+
+  // mpv doubles as the GAME tab's HUD preview canvas.
+  property bool mpvInstalled: false
+
+  Process {
+    id: mangoCheckProc
+    command: ["sh", "-c", "command -v mangohud >/dev/null && echo mango; command -v mpv >/dev/null && echo mpv"]
+    running: true
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.mangohudInstalled = text.indexOf("mango") !== -1
+        root.mpvInstalled = text.indexOf("mpv") !== -1
+      }
+    }
   }
 
   Process {

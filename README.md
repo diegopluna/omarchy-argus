@@ -46,6 +46,7 @@ order in the panel's **SETUP** tab; the choice persists to
 - **TEMP** — every hwmon sensor, grouped by device with friendly names (CPU, GPU, NVMe with drive model, RAM, Wi-Fi, …), plus fan speeds; each sensor row can carry its own alert threshold, set inline, and noisy sensors can be hidden (hidden sensors keep alerting)
 - **BAT** — per-battery charge, status, power draw, health, and time estimate (tab appears only when a system battery exists)
 - **PWR** — measured power draw per source: CPU package and friends via RAPL (with an honest hint when the kernel keeps the counters root-only — see Power below), every GPU, battery discharge, draw sparklines with session peaks, and session energy totals in Wh
+- **GAME** — the in-game HUD's control room: pick which metrics MangoHud shows (FPS, frametime graph, CPU/GPU stats, VRAM…), give them custom labels, set position, font size, opacity, compact mode, the toggle hotkey — and match the overlay to your Omarchy theme. Changes apply live to running games
 - **ALERTS** — every alert with its opt-in toggle and inline threshold stepper (all off by default), the per-sensor alerts armed from the TEMP tab, and the fired-alert log with context snapshots
 - **SETUP** — toggles and reorder arrows for which metrics the bar shows, the Home-tile picker, panel settings (°C/°F, refresh interval), and Argus's own measured sampling cost
 
@@ -106,7 +107,11 @@ omarchy plugin enable io.github.diegopluna.argus
 Requires only tools an Omarchy install already has: `bash`, `coreutils`,
 `df`, `ps` (procps), `lsblk` (util-linux), and `lspci` (pciutils) for GPU
 names. On NVIDIA systems, `nvidia-smi` (which ships with the driver)
-provides GPU stats. `btop` is optional (right-click launch).
+provides GPU stats. Optional: `btop` (right-click launch), and
+`mangohud` (`sudo pacman -S mangohud` — not part of Omarchy) for the
+GAME tab's in-game HUD; its test window uses `mpv`, which Omarchy's
+base install ships. Without MangoHud everything else works and the
+GAME tab says what's missing.
 
 ## Uninstall
 
@@ -199,6 +204,32 @@ page a webhook:
 ```json
 "alertCommand": "curl -s -d \"$ARGUS_ALERT_TEXT\" https://ntfy.sh/my-box"
 ```
+
+## In-game HUD (MangoHud)
+
+The GAME tab turns Argus into the GUI for [MangoHud](https://github.com/flightlessmango/MangoHud):
+pick metrics, label them ("RX 9070" instead of "GPU"), place and style
+the overlay — including colors that follow your Omarchy theme, in-game —
+and every change applies **live** to running games via
+`mangohudctl reload-cfg`. Argus writes its own config file
+(`~/.local/state/argus/mangohud.conf`) and never touches your
+`MangoHud.conf`.
+
+For RivaTuner-style "works in every game automatically" behavior, add
+two lines to `~/.config/hypr/hyprland.conf` (one-time; log out and in
+afterwards):
+
+```
+env = MANGOHUD,1
+env = MANGOHUD_CONFIGFILE,/home/YOU/.local/state/argus/mangohud.conf
+```
+
+MangoHud is a Vulkan implicit layer, and Proton runs everything through
+DXVK/vkd3d — so this covers essentially your whole library with no
+per-game launch options. The GAME tab shows whether the injection is
+active and the exact lines to paste. `toggle_hud` (default
+`Shift_R+F12`, configurable in the tab) summons or hides the overlay
+mid-game.
 
 ## Power
 

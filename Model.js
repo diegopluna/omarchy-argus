@@ -1478,6 +1478,150 @@ function fmtPct(pct) {
   return isFinite(pct) ? Math.round(pct) + "%" : "—"
 }
 
+// ---- In-game HUD (MangoHud) ----------------------------------------------
+// The GAME tab writes a managed MangoHud config; these are the pure
+// pieces — the metric catalog, the settings normalizer, and the config
+// renderer. Nothing here talks to MangoHud: the shell writes the file
+// and pokes `mangohudctl reload-cfg`, so a running game restyles live.
+
+var MANGO_METRICS = [
+  { key: "fps",        label: "FPS",                 params: ["fps"] },
+  { key: "frametime",  label: "Frametime + graph",   params: ["frametime", "frame_timing"] },
+  { key: "cpu",        label: "CPU load + temp",     params: ["cpu_stats", "cpu_temp"] },
+  { key: "cpuextra",   label: "CPU clock + power",   params: ["cpu_mhz", "cpu_power"] },
+  { key: "cores",      label: "Per-core loads",      params: ["core_load"] },
+  { key: "gpu",        label: "GPU load + temp",     params: ["gpu_stats", "gpu_temp"] },
+  { key: "gpuextra",   label: "GPU clocks + power",  params: ["gpu_core_clock", "gpu_mem_clock", "gpu_power"] },
+  { key: "vram",       label: "VRAM",                params: ["vram"] },
+  { key: "ram",        label: "RAM",                 params: ["ram"] },
+  { key: "engine",     label: "Engine + Wine",       params: ["engine_version", "wine"] },
+  { key: "gamemode",   label: "GameMode + vkBasalt", params: ["gamemode", "vkbasalt"] },
+  { key: "resolution", label: "Resolution",          params: ["resolution"] },
+  { key: "throttle",   label: "Throttling status",   params: ["throttling_status"] },
+  { key: "histogram",  label: "FPS histogram",       params: ["histogram"] },
+  { key: "clock",      label: "Clock",               params: ["time"] },
+  { key: "battery",    label: "Battery",             params: ["battery", "battery_watt"] }
+]
+
+var MANGO_POSITIONS = ["top-left", "top-center", "top-right", "middle-left", "middle-right", "bottom-left", "bottom-center", "bottom-right"]
+var DEFAULT_MANGO_METRICS = ["fps", "frametime", "cpu", "gpu"]
+// fps_limit choices the stepper walks through; 0 = uncapped.
+var MANGO_FPS_LIMITS = [0, 30, 60, 90, 120, 144, 165, 240]
+
+function mangoMetricByKey(key) {
+  for (var i = 0; i < MANGO_METRICS.length; i++) if (MANGO_METRICS[i].key === key) return MANGO_METRICS[i]
+  return null
+}
+
+// Config values land on their own line in a line-and-comma-structured
+// file; strip anything that could break out of one.
+function cleanMangoValue(value) {
+  return String(value || "").replace(/[\r\n,#]/g, " ").replace(/\s+/g, " ").trim().slice(0, 64)
+}
+
+// "#aarrggbb" / "#rrggbb" → "RRGGBB", MangoHud's color format.
+function mangoColor(color) {
+  var hex = String(color || "").replace("#", "")
+  return (hex.length === 8 ? hex.slice(2) : hex).toUpperCase()
+}
+
+function normalizeMango(value) {
+  var m = value && typeof value === "object" ? value : {}
+  function num(v, lo, hi, dflt) {
+    var n = Number(v)
+    return isFinite(n) ? Math.max(lo, Math.min(hi, n)) : dflt
+  }
+  var metrics = []
+  var list = m.metrics instanceof Array ? m.metrics : DEFAULT_MANGO_METRICS
+  for (var i = 0; i < list.length; i++) {
+    if (mangoMetricByKey(list[i]) !== null && metrics.indexOf(list[i]) === -1) metrics.push(list[i])
+  }
+  return {
+    enabled: m.enabled === true,
+    metrics: metrics,
+    cpuText: cleanMangoValue(m.cpuText),
+    gpuText: cleanMangoValue(m.gpuText),
+    position: MANGO_POSITIONS.indexOf(m.position) !== -1 ? m.position : "top-left",
+    fontSize: Math.round(num(m.fontSize, 12, 48, 22)),
+    bgAlpha: Math.round(num(m.bgAlpha, 0, 1, 0.4) * 10) / 10,
+    compact: m.compact === true,
+    themed: m.themed !== false,
+    startHidden: m.startHidden === true,
+    hotkey: cleanMangoValue(m.hotkey) || "Shift_R+F12",
+    horizontal: m.horizontal === true,
+    roundCorners: Math.round(num(m.roundCorners, 0, 20, 0)),
+    tableColumns: Math.round(num(m.tableColumns, 1, 6, 3)),
+    offsetX: Math.round(num(m.offsetX, 0, 4000, 0)),
+    offsetY: Math.round(num(m.offsetY, 0, 4000, 0)),
+    fpsLimit: MANGO_FPS_LIMITS.indexOf(Number(m.fpsLimit)) !== -1 ? Number(m.fpsLimit) : 0,
+    fpsLow: Math.round(num(m.fpsLow, 10, 495, 30)),
+    fpsHigh: Math.round(num(m.fpsHigh, 15, 500, 60))
+  }
+}
+
+// Walk the fps_limit choices; delta is ±1.
+function stepFpsLimit(current, delta) {
+  var index = MANGO_FPS_LIMITS.indexOf(Number(current))
+  if (index === -1) index = 0
+  return MANGO_FPS_LIMITS[Math.max(0, Math.min(MANGO_FPS_LIMITS.length - 1, index + delta))]
+}
+
+function toggleMangoMetric(current, key) {
+  var list = normalizeMango({ metrics: current }).metrics
+  var index = list.indexOf(key)
+  if (index >= 0) list.splice(index, 1)
+  else if (mangoMetricByKey(key) !== null) list.push(key)
+  return list
+}
+
+// Render the managed config. `colors` (already mangoColor-stripped hex)
+// themes the overlay to match the shell; disabled renders a config that
+// only hides the HUD, so flipping the master toggle mid-game takes
+// effect on reload too.
+function mangohudConfig(mango, colors) {
+  var lines = ["# Managed by Argus - edits are overwritten; configure in the GAME tab."]
+  if (!mango.enabled) {
+    lines.push("no_display")
+    return lines.join("\n") + "\n"
+  }
+  lines.push("toggle_hud=" + mango.hotkey)
+  lines.push("position=" + mango.position)
+  lines.push("font_size=" + mango.fontSize)
+  lines.push("background_alpha=" + mango.bgAlpha)
+  lines.push("table_columns=" + mango.tableColumns)
+  if (mango.compact) lines.push("hud_compact")
+  if (mango.startHidden) lines.push("no_display")
+  if (mango.horizontal) lines.push("horizontal")
+  if (mango.roundCorners > 0) lines.push("round_corners=" + mango.roundCorners)
+  if (mango.offsetX > 0) lines.push("offset_x=" + mango.offsetX)
+  if (mango.offsetY > 0) lines.push("offset_y=" + mango.offsetY)
+  if (mango.fpsLimit > 0) lines.push("fps_limit=" + mango.fpsLimit)
+  // Explicit in both directions: several params (fps, frametime,
+  // frame_timing, cpu_stats, gpu_stats) are default-ON inside MangoHud,
+  // so an absent line doesn't disable them — only `param=0` does.
+  for (var i = 0; i < MANGO_METRICS.length; i++) {
+    var metric = MANGO_METRICS[i]
+    var on = mango.metrics.indexOf(metric.key) !== -1
+    for (var p = 0; p < metric.params.length; p++) {
+      lines.push(on ? metric.params[p] : metric.params[p] + "=0")
+    }
+  }
+  if (mango.cpuText !== "") lines.push("cpu_text=" + mango.cpuText)
+  if (mango.gpuText !== "") lines.push("gpu_text=" + mango.gpuText)
+  if (mango.themed && colors) {
+    lines.push("text_color=" + colors.text)
+    lines.push("background_color=" + colors.background)
+    lines.push("cpu_color=" + colors.accent)
+    lines.push("gpu_color=" + colors.accent)
+    lines.push("engine_color=" + colors.text)
+    lines.push("frametime_color=" + colors.accent)
+    var low = Math.min(mango.fpsLow, mango.fpsHigh - 5)
+    lines.push("fps_value=" + low + "," + mango.fpsHigh)
+    lines.push("fps_color=" + colors.urgent + "," + colors.text + "," + colors.accent)
+  }
+  return lines.join("\n") + "\n"
+}
+
 // ---- Temperature unit ----------------------------------------------------
 // Display-only: everything is measured, stored, and thresholded in °C;
 // this only flips how temperatures render. Each QML importer holds its
@@ -1999,6 +2143,17 @@ if (typeof module !== "undefined") {
     setTempUnit: setTempUnit,
     displayTemp: displayTemp,
     tempSuffix: tempSuffix,
+    MANGO_METRICS: MANGO_METRICS,
+    MANGO_POSITIONS: MANGO_POSITIONS,
+    DEFAULT_MANGO_METRICS: DEFAULT_MANGO_METRICS,
+    mangoMetricByKey: mangoMetricByKey,
+    cleanMangoValue: cleanMangoValue,
+    mangoColor: mangoColor,
+    normalizeMango: normalizeMango,
+    toggleMangoMetric: toggleMangoMetric,
+    mangohudConfig: mangohudConfig,
+    MANGO_FPS_LIMITS: MANGO_FPS_LIMITS,
+    stepFpsLimit: stepFpsLimit,
     fmtWatts: fmtWatts,
     metricValue: metricValue,
     metricUrgent: metricUrgent,

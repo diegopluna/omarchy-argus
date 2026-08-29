@@ -782,6 +782,59 @@ assert.strictEqual(Model.raplLabel("dram"), "Memory (DRAM)")
 assert.strictEqual(Model.fmtWh(3.14), "3.1 Wh")
 assert.strictEqual(Model.fmtWh(0), "")
 
+// MangoHud config: normalizer clamps and defaults, values can't break
+// out of their config line, and the renderer emits exactly what the
+// GAME tab chose.
+const mangoDefaults = Model.normalizeMango(null)
+assert.strictEqual(mangoDefaults.enabled, false, "HUD off by default")
+assert.deepStrictEqual(mangoDefaults.metrics, Model.DEFAULT_MANGO_METRICS)
+assert.strictEqual(mangoDefaults.hotkey, "Shift_R+F12")
+assert.strictEqual(mangoDefaults.themed, true)
+const mangoWeird = Model.normalizeMango({ enabled: true, metrics: ["fps", "junk", "fps"], fontSize: 400, bgAlpha: 7, position: "under-the-couch", cpuText: "line\nbreak, #x" })
+assert.deepStrictEqual(mangoWeird.metrics, ["fps"])
+assert.strictEqual(mangoWeird.fontSize, 48, "font clamped")
+assert.strictEqual(mangoWeird.bgAlpha, 1)
+assert.strictEqual(mangoWeird.position, "top-left", "unknown position falls back")
+assert.strictEqual(mangoWeird.cpuText, "line break x", "line/list/comment chars stripped")
+assert.strictEqual(Model.mangoColor("#ff112233"), "112233", "alpha stripped for MangoHud")
+assert.strictEqual(Model.mangoColor("#abcdef"), "ABCDEF")
+assert.deepStrictEqual(Model.toggleMangoMetric(["fps"], "ram"), ["fps", "ram"])
+assert.deepStrictEqual(Model.toggleMangoMetric(["fps", "ram"], "fps"), ["ram"])
+const mangoColors = { text: "EEEEEE", background: "111111", accent: "33CCAA", urgent: "CC3333" }
+const mangoOff = Model.mangohudConfig(Model.normalizeMango({ enabled: false }), mangoColors)
+assert.ok(mangoOff.includes("no_display") && !mangoOff.includes("fps"), "disabled config only hides")
+const mangoOn = Model.mangohudConfig(Model.normalizeMango({
+  enabled: true, metrics: ["fps", "frametime", "gpu"], gpuText: "RX 9070",
+  position: "top-right", fontSize: 20, bgAlpha: 0.3, compact: true, startHidden: true
+}), mangoColors)
+for (const line of ["toggle_hud=Shift_R+F12", "position=top-right", "font_size=20", "background_alpha=0.3",
+  "hud_compact", "no_display", "fps", "frametime", "frame_timing", "gpu_stats", "gpu_temp",
+  "gpu_text=RX 9070", "text_color=EEEEEE", "fps_color=CC3333,EEEEEE,33CCAA"]) {
+  assert.ok(mangoOn.split("\n").some(l => l === line || l.startsWith(line + "=") || l === line), "config has " + line)
+}
+assert.ok(mangoOn.split("\n").some(l => l === "cpu_stats=0"), "unselected default-on metrics are explicitly disabled")
+assert.ok(!mangoOn.split("\n").some(l => l === "cpu_stats"), "unselected metrics never enabled bare")
+assert.ok(!mangoOn.includes("cpu_text"), "empty label writes nothing")
+const mangoPlain = Model.mangohudConfig(Model.normalizeMango({ enabled: true, themed: false }), mangoColors)
+assert.ok(!mangoPlain.includes("text_color"), "unthemed config carries no colors")
+
+// Richer knobs: fps limit walks a fixed list, offsets/corners/columns
+// clamp, fps thresholds stay ordered in the rendered config.
+assert.strictEqual(Model.stepFpsLimit(0, 1), 30)
+assert.strictEqual(Model.stepFpsLimit(144, 1), 165)
+assert.strictEqual(Model.stepFpsLimit(0, -1), 0, "clamped at uncapped")
+assert.strictEqual(Model.stepFpsLimit(999, 1), 30, "unknown value restarts the list")
+const mangoRich = Model.normalizeMango({ enabled: true, horizontal: true, roundCorners: 99, tableColumns: 9, offsetX: -5, offsetY: 50, fpsLimit: 144, fpsLow: 60, fpsHigh: 40 })
+assert.strictEqual(mangoRich.roundCorners, 20)
+assert.strictEqual(mangoRich.tableColumns, 6)
+assert.strictEqual(mangoRich.offsetX, 0)
+const richConf = Model.mangohudConfig(mangoRich, mangoColors)
+for (const line of ["horizontal", "round_corners=20", "table_columns=6", "offset_y=50", "fps_limit=144", "fps_value=35,40"]) {
+  assert.ok(richConf.split("\n").some(l => l === line), "rich config has " + line)
+}
+assert.ok(!richConf.includes("offset_x"), "zero offset writes nothing")
+assert.ok(Model.mangoMetricByKey("throttle") && Model.mangoMetricByKey("histogram") && Model.mangoMetricByKey("clock") && Model.mangoMetricByKey("battery"), "new metric rows exist")
+
 // Temperature unit is display-only: storage and thresholds stay °C, and
 // Fahrenheit says so with an explicit °F suffix.
 Model.setTempUnit("F")

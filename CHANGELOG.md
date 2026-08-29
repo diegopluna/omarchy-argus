@@ -4,6 +4,40 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] — 2026-08-29
+
+### Added
+- **GAME tab: the in-game HUD's control room.** Argus is now a GUI for
+  MangoHud — pick which metrics the overlay shows (FPS, frametime
+  graph, CPU/GPU load/temp/power/clocks, VRAM, RAM, engine/Wine,
+  per-core loads…), give CPU and GPU custom labels, set position, font
+  size, background opacity, compact mode, start-hidden, and the toggle
+  hotkey. With "Match Omarchy theme colors" on, the in-game overlay
+  follows the shell theme — re-theming the desktop restyles the HUD in
+  a running game. Every change writes Argus's own managed config
+  (`~/.local/state/argus/mangohud.conf`; the user's MangoHud.conf is
+  never touched) and fires `mangohudctl reload-cfg`, so edits apply
+  live mid-game. The tab detects whether MangoHud is installed and
+  whether the global-injection env (`MANGOHUD=1` +
+  `MANGOHUD_CONFIGFILE`) is active, and shows the exact one-time setup
+  lines when it isn't; disabling the master toggle renders a config
+  that hides the HUD, so that too takes effect live.
+- **Test window**: a button in the GAME tab spawns a looping Vulkan
+  test pattern (mpv) with the HUD injected — tweak any knob and watch
+  the overlay restyle live, no game required. One instance at a time;
+  close the window when done.
+- Richer HUD customization: FPS limit (off/30/60/90/120/144/165/240),
+  FPS color thresholds (red-below / green-above), horizontal layout,
+  round corners, table columns, and X/Y offsets — plus four more metric
+  rows (throttling status, FPS histogram, clock, battery).
+- The tab strip tightened its spacing so all twelve tabs keep to one
+  row.
+- The marketplace preview became a product banner — wordmark, tagline,
+  feature chips, and layered live screenshots — instead of a raw panel
+  capture. Its SVG source lives in `screenshots/banner.svg` for future
+  edits; the manifest's widget description caught up with the panel's
+  current feature set.
+
 ## [1.1.0] — 2026-08-29
 
 ### Changed

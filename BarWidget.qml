@@ -84,9 +84,23 @@ Panel {
     var t = ["HOME", "CPU", "MEM", "GPU", "DISK", "NET", "PROC", "TEMP"]
     if (hasBattery) t.push("BAT")
     t.push("PWR")
+    t.push("GAME")
     t.push("ALERTS")
     t.push("SETUP")
     return t
+  }
+
+  // ---- GAME tab (MangoHud) ----------------------------------------------
+  property bool mangoFieldFocused: false
+
+  function setMango(key, value) {
+    var m = JSON.parse(JSON.stringify(Service.mango))
+    m[key] = value
+    persistPluginSetting("mangoHud", m)
+  }
+
+  function toggleMangoMetric(key) {
+    setMango("metrics", Model.toggleMangoMetric(Service.mango.metrics, key))
   }
   property string tab: "HOME"
 
@@ -613,9 +627,9 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      // The filter field owns the keyboard while focused — h/j/k/l/x must
-      // be typeable text there, not navigation.
-      blocked: root.procFilterFocused
+      // A focused text field owns the keyboard — h/j/k/l/x must be
+      // typeable text there, not navigation.
+      blocked: root.procFilterFocused || root.mangoFieldFocused
       onCloseRequested: {
         if (confirmKill.opened) { root.pendingKill = null; return }
         if (root.eggActive) { root.eggActive = false; return }
@@ -768,7 +782,7 @@ Panel {
 
           Flow {
             width: parent.width
-            spacing: Style.space(12)
+            spacing: Style.space(8)
 
             WheelHandler {
               onWheel: function(event) {
@@ -2472,6 +2486,286 @@ Panel {
             }
           }
 
+          // ---- Game tab: the in-game HUD's control room. Argus renders a
+          // managed MangoHud config and reloads running games live.
+          Column {
+            visible: root.tab === "GAME"
+            width: parent.width
+            spacing: Style.space(8)
+
+            Text {
+              visible: !Service.mangohudInstalled
+              width: parent.width
+              text: "MangoHud is not installed — the in-game HUD needs it: sudo pacman -S mangohud"
+              textFormat: Text.PlainText
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            RowLayout {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Text {
+                Layout.fillWidth: true
+                text: "In-game HUD (MangoHud)"
+                textFormat: Text.PlainText
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                elide: Text.ElideRight
+              }
+
+              // A looping Vulkan test pattern with the HUD injected —
+              // every tweak below restyles it live, no game needed.
+              Button {
+                visible: Service.mpvInstalled && Service.mangohudInstalled
+                enabled: Service.mango.enabled
+                text: "Test window"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                // The app-id reaches the script only via "$2", so the
+                // guard's own command line never contains the expanded
+                // "wayland-app-id=<id>" it greps for — only the running
+                // mpv does. (An inline literal made every click match
+                // itself and exit before launching.)
+                onClicked: Quickshell.execDetached(["sh", "-c",
+                  'pgrep -f "wayland-app-id=$2" >/dev/null && exit 0; exec env MANGOHUD=1 MANGOHUD_CONFIGFILE="$1" mpv --loop=inf --really-quiet --wayland-app-id="$2" --geometry=960x540 --vo=gpu-next --gpu-api=vulkan "av://lavfi:testsrc2=size=960x540:rate=60"',
+                  "argus-preview", Service.mangoConfPath, "argus-hud-preview"])
+              }
+
+              ToggleSwitch {
+                checked: Service.mango.enabled
+                foreground: root.foreground
+                accent: Color.accent
+                onToggled: root.setMango("enabled", !Service.mango.enabled)
+              }
+            }
+
+            Text {
+              visible: Service.mango.enabled && !Service.mangoInjectionReady
+              width: parent.width
+              text: "One-time setup — add to ~/.config/hypr/hyprland.conf so every Vulkan/Proton game picks the HUD up automatically, then log out and in:\n"
+                + "env = MANGOHUD,1\n"
+                + "env = MANGOHUD_CONFIGFILE," + Service.mangoConfPath
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WrapAnywhere
+            }
+
+            Text {
+              visible: Service.mango.enabled && Service.mangoInjectionReady
+              width: parent.width
+              text: "Global injection active — every Vulkan/Proton game gets the HUD. Toggle it in-game with " + Service.mango.hotkey + "."
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            PanelSectionHeader {
+              text: "METRICS"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Repeater {
+              model: Model.MANGO_METRICS
+
+              MangoToggle {
+                required property var modelData
+                label: modelData.label
+                checked: Service.mango.metrics.indexOf(modelData.key) !== -1
+                onFlip: root.toggleMangoMetric(modelData.key)
+              }
+            }
+
+            PanelSectionHeader {
+              text: "LABELS"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            MangoField {
+              label: "CPU label"
+              value: Service.mango.cpuText
+              placeholder: "e.g. 9700X"
+              settingKey: "cpuText"
+            }
+
+            MangoField {
+              label: "GPU label"
+              value: Service.mango.gpuText
+              placeholder: "e.g. RX 9070"
+              settingKey: "gpuText"
+            }
+
+            PanelSectionHeader {
+              text: "APPEARANCE"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Text {
+              width: parent.width
+              text: "Position"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+            }
+
+            Flow {
+              width: parent.width
+              spacing: Style.space(4)
+
+              Repeater {
+                model: Model.MANGO_POSITIONS
+
+                Button {
+                  required property string modelData
+                  text: modelData
+                  selected: Service.mango.position === modelData
+                  bordered: true
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: root.setMango("position", modelData)
+                }
+              }
+            }
+
+            MangoStepper {
+              label: "Font size"
+              display: Service.mango.fontSize + "px"
+              canDec: Service.mango.fontSize > 12
+              canInc: Service.mango.fontSize < 48
+              onDec: root.setMango("fontSize", Service.mango.fontSize - 2)
+              onInc: root.setMango("fontSize", Service.mango.fontSize + 2)
+            }
+
+            MangoStepper {
+              label: "Background opacity"
+              display: Math.round(Service.mango.bgAlpha * 100) + "%"
+              canDec: Service.mango.bgAlpha > 0
+              canInc: Service.mango.bgAlpha < 1
+              onDec: root.setMango("bgAlpha", Math.round((Service.mango.bgAlpha - 0.1) * 10) / 10)
+              onInc: root.setMango("bgAlpha", Math.round((Service.mango.bgAlpha + 0.1) * 10) / 10)
+            }
+
+            MangoStepper {
+              label: "Table columns"
+              display: String(Service.mango.tableColumns)
+              canDec: Service.mango.tableColumns > 1
+              canInc: Service.mango.tableColumns < 6
+              onDec: root.setMango("tableColumns", Service.mango.tableColumns - 1)
+              onInc: root.setMango("tableColumns", Service.mango.tableColumns + 1)
+            }
+
+            MangoStepper {
+              label: "Round corners"
+              display: Service.mango.roundCorners + "px"
+              canDec: Service.mango.roundCorners > 0
+              canInc: Service.mango.roundCorners < 20
+              onDec: root.setMango("roundCorners", Service.mango.roundCorners - 2)
+              onInc: root.setMango("roundCorners", Service.mango.roundCorners + 2)
+            }
+
+            MangoStepper {
+              label: "Offset X"
+              display: Service.mango.offsetX + "px"
+              canDec: Service.mango.offsetX > 0
+              canInc: Service.mango.offsetX < 4000
+              onDec: root.setMango("offsetX", Math.max(0, Service.mango.offsetX - 25))
+              onInc: root.setMango("offsetX", Service.mango.offsetX + 25)
+            }
+
+            MangoStepper {
+              label: "Offset Y"
+              display: Service.mango.offsetY + "px"
+              canDec: Service.mango.offsetY > 0
+              canInc: Service.mango.offsetY < 4000
+              onDec: root.setMango("offsetY", Math.max(0, Service.mango.offsetY - 25))
+              onInc: root.setMango("offsetY", Service.mango.offsetY + 25)
+            }
+
+            MangoStepper {
+              label: "FPS limit"
+              display: Service.mango.fpsLimit === 0 ? "off" : Service.mango.fpsLimit + " fps"
+              canDec: Model.MANGO_FPS_LIMITS.indexOf(Service.mango.fpsLimit) > 0
+              canInc: Model.MANGO_FPS_LIMITS.indexOf(Service.mango.fpsLimit) < Model.MANGO_FPS_LIMITS.length - 1
+              onDec: root.setMango("fpsLimit", Model.stepFpsLimit(Service.mango.fpsLimit, -1))
+              onInc: root.setMango("fpsLimit", Model.stepFpsLimit(Service.mango.fpsLimit, 1))
+            }
+
+            MangoStepper {
+              label: "FPS red below"
+              display: String(Service.mango.fpsLow)
+              canDec: Service.mango.fpsLow > 10
+              canInc: Service.mango.fpsLow < Service.mango.fpsHigh - 5
+              onDec: root.setMango("fpsLow", Service.mango.fpsLow - 5)
+              onInc: root.setMango("fpsLow", Service.mango.fpsLow + 5)
+            }
+
+            MangoStepper {
+              label: "FPS green above"
+              display: String(Service.mango.fpsHigh)
+              canDec: Service.mango.fpsHigh > Service.mango.fpsLow + 5
+              canInc: Service.mango.fpsHigh < 500
+              onDec: root.setMango("fpsHigh", Service.mango.fpsHigh - 5)
+              onInc: root.setMango("fpsHigh", Service.mango.fpsHigh + 5)
+            }
+
+            MangoToggle {
+              label: "Horizontal layout"
+              checked: Service.mango.horizontal
+              onFlip: root.setMango("horizontal", !Service.mango.horizontal)
+            }
+
+            MangoToggle {
+              label: "Compact layout"
+              checked: Service.mango.compact
+              onFlip: root.setMango("compact", !Service.mango.compact)
+            }
+
+            MangoToggle {
+              label: "Match Omarchy theme colors"
+              checked: Service.mango.themed
+              onFlip: root.setMango("themed", !Service.mango.themed)
+            }
+
+            MangoToggle {
+              label: "Start hidden — summon with the hotkey"
+              checked: Service.mango.startHidden
+              onFlip: root.setMango("startHidden", !Service.mango.startHidden)
+            }
+
+            MangoField {
+              label: "Toggle hotkey"
+              value: Service.mango.hotkey
+              placeholder: "Shift_R+F12"
+              settingKey: "hotkey"
+            }
+
+            Text {
+              width: parent.width
+              text: "Changes apply live to running games. Argus writes its own config ("
+                + Service.mangoConfPath.replace(/^\/home\/[^/]+/, "~")
+                + ") and never touches your MangoHud.conf. Theme colors follow the shell theme, in-game too."
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+          }
+
           // ---- Alerts tab: per-metric opt-in toggles, thresholds, and the
           // session's fired-alert log.
           Column {
@@ -2944,6 +3238,126 @@ Panel {
       font.family: root.fontFamily
       font.pixelSize: Style.font.body
       wrapMode: Text.WordWrap
+    }
+  }
+
+  // GAME-tab building blocks: a labeled toggle row, a labeled −/+
+  // stepper, and a labeled text field that persists on editing-finished
+  // and hands the keyboard back to the panel.
+  component MangoToggle: RowLayout {
+    id: mangoToggle
+    required property string label
+    required property bool checked
+    signal flip()
+    width: parent ? parent.width : 0
+    spacing: Style.space(8)
+
+    Text {
+      Layout.fillWidth: true
+      text: mangoToggle.label
+      textFormat: Text.PlainText
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+      elide: Text.ElideRight
+    }
+
+    ToggleSwitch {
+      checked: mangoToggle.checked
+      foreground: root.foreground
+      accent: Color.accent
+      onToggled: mangoToggle.flip()
+    }
+  }
+
+  component MangoStepper: RowLayout {
+    id: mangoStepper
+    required property string label
+    required property string display
+    property bool canDec: true
+    property bool canInc: true
+    signal dec()
+    signal inc()
+    width: parent ? parent.width : 0
+    spacing: Style.space(8)
+
+    Text {
+      Layout.fillWidth: true
+      text: mangoStepper.label
+      textFormat: Text.PlainText
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+      elide: Text.ElideRight
+    }
+
+    PanelActionButton {
+      iconText: "\u{f0374}"
+      tooltipText: "Decrease"
+      enabled: mangoStepper.canDec
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+      fontSize: Style.font.bodySmall
+      size: Style.space(22)
+      onClicked: mangoStepper.dec()
+    }
+
+    Text {
+      text: mangoStepper.display
+      textFormat: Text.PlainText
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+    }
+
+    PanelActionButton {
+      iconText: "\u{f0415}"
+      tooltipText: "Increase"
+      enabled: mangoStepper.canInc
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+      fontSize: Style.font.bodySmall
+      size: Style.space(22)
+      onClicked: mangoStepper.inc()
+    }
+  }
+
+  component MangoField: RowLayout {
+    id: mangoField
+    required property string label
+    required property string value
+    required property string settingKey
+    property string placeholder: ""
+    width: parent ? parent.width : 0
+    spacing: Style.space(8)
+
+    Text {
+      Layout.fillWidth: true
+      text: mangoField.label
+      textFormat: Text.PlainText
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+      elide: Text.ElideRight
+    }
+
+    TextField {
+      id: mangoInput
+      Layout.preferredWidth: Style.space(170)
+      text: mangoField.value
+      placeholderText: mangoField.placeholder
+      foreground: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      onActiveFocusChanged: root.mangoFieldFocused = activeFocus
+      onEditingFinished: {
+        if (text !== mangoField.value) root.setMango(mangoField.settingKey, text)
+      }
+      Keys.onEscapePressed: {
+        text = mangoField.value
+        keyCatcher.forceActiveFocus()
+      }
+      Keys.onReturnPressed: keyCatcher.forceActiveFocus()
     }
   }
 
