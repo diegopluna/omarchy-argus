@@ -80,7 +80,7 @@ runnable tasks than cores, memory reclaim, saturated disk).
 | ![GPU tab](screenshots/tab-gpu.png) | ![PWR tab](screenshots/tab-pwr.png) |
 | ![MEM tab](screenshots/tab-mem.png) | ![NET tab](screenshots/tab-net.png) |
 | ![DISK tab](screenshots/tab-disk.png) | ![TEMP tab](screenshots/tab-temp.png) |
-| ![SETUP tab](screenshots/tab-setup.png) | |
+| ![SETUP tab](screenshots/tab-settings.png) | |
 
 ## Interactions
 

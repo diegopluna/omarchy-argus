@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.diegopluna.argus",
   "name": "Argus",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "author": "Diego Peter",
   "license": "MIT",
   "description": "CPU, RAM, GPU, disk, network, battery, power, and temperature stats in the bar, with a full system panel: 2m/1h/24h history that survives restarts (the flight recorder), per-metric opt-in alerts with context snapshots, a filterable sortable process table, per-process GPU usage, drive SMART health, an alert hook for automation, and a GAME tab that configures your MangoHud in-game overlay live.",

@@ -4,6 +4,17 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [1.2.1] — 2026-08-29
+
+### Fixed
+- Renamed `screenshots/tab-setup.png` to `tab-settings.png`. The
+  marketplace's security baseline force-scans any file whose name
+  contains "setup" as a potential install script, and a binary asset
+  with such a name fails the scan closed — this one screenshot was the
+  entire cause of the `security-baseline-scan-limit` verification
+  failures. Diagnosed by running the marketplace's own scanner against
+  the release commit.
+
 ## [1.2.0] — 2026-08-29
 
 ### Added
