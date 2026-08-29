@@ -129,6 +129,14 @@ assert.strictEqual(nvSample.gpus[0].powerW, 12, "amdgpu power µW → W")
 assert.strictEqual(nvSample.gpus[1].label, "GPU 0 (NVIDIA)")
 assert.strictEqual(nvSample.gpus[1].powerW, 45.2)
 
+// GPU display names from lspci: the last bracket wins unless it is a bare
+// vendor tag — "[AMD/ATI] Phoenix1" must yield the chip, not the vendor.
+assert.strictEqual(Model.prettyGpuName("Advanced Micro Devices, Inc. [AMD/ATI] Phoenix1 (rev c1)"), "Phoenix1")
+assert.strictEqual(Model.prettyGpuName("Advanced Micro Devices, Inc. [AMD/ATI] Navi 48 [Radeon RX 9070/9070 XT/9070 GRE] (rev c0)"), "Radeon RX 9070/9070 XT/9070 GRE")
+assert.strictEqual(Model.prettyGpuName("NVIDIA Corporation GA102 [GeForce RTX 3080] (rev a1)"), "GeForce RTX 3080")
+assert.strictEqual(Model.prettyGpuName("Intel Corporation DG2 [Arc A770]"), "Arc A770")
+assert.strictEqual(Model.prettyGpuName("Advanced Micro Devices, Inc. [AMD/ATI]"), "Advanced Micro Devices, Inc. [AMD/ATI]", "nothing after the vendor tag keeps the raw name")
+
 // APU memory pool: an iGPU's mem_info_vram_total is only the BIOS
 // carve-out; its real ceiling adds GTT (shared system RAM). dGPUs keep
 // plain VRAM, and pre-0.9.0 captures without the GTT fields still parse.
@@ -614,6 +622,9 @@ for (const name of fixtures) {
   assert.ok(fx.disks.every(d => d.size > 0), tag + "disk sizes")
   assert.ok(fx.temps.every(t => t.celsius > -41 && t.celsius < 251), tag + "plausible temps")
   assert.ok(fx.gpus.every(g => g.card !== "" && g.label !== ""), tag + "gpu identity")
+  // A bare vendor tag is never a GPU name — a fixture landing here means
+  // prettyGpuName missed that machine's lspci shape.
+  assert.ok(fx.gpus.every(g => !/^(AMD\/ATI|NVIDIA|Intel)$/i.test(g.name)), tag + "gpu names resolve past the vendor tag")
   // Every derived path the panel renders must hold up on this hardware.
   Model.groupTemps(fx.temps).forEach(g => assert.ok(g.title.length > 0, tag + "group titles"))
   fx.temps.forEach(t => assert.ok(Model.tempName(t).length > 0, tag + "sensor names"))

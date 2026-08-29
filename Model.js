@@ -485,16 +485,18 @@ function sensorRowLabel(temp) {
 }
 
 // "Advanced Micro Devices, Inc. [AMD/ATI] Navi 48 [Radeon RX 9070/...] (rev c0)"
-// → "Radeon RX 9070/9070 XT/9070 GRE"
+// → "Radeon RX 9070/9070 XT/9070 GRE". A lone vendor bracket
+// ("... [AMD/ATI] Phoenix1") is never the answer — strip it and keep the
+// chip name that follows.
 function prettyGpuName(raw) {
   var name = String(raw || "").replace(/\s*\(rev [^)]*\)\s*$/, "").trim()
   if (name === "") return ""
   var brackets = name.match(/\[([^\]]+)\]/g)
   if (brackets && brackets.length > 0) {
     var last = brackets[brackets.length - 1].slice(1, -1)
-    if (!/AMD\/ATI|NVIDIA|Intel/i.test(last) || brackets.length === 1) return last
+    if (!/^(AMD\/ATI|NVIDIA|Intel)$/i.test(last)) return last
   }
-  return name.replace(/^[^\[]*\[[^\]]*\]\s*/, "") || name
+  return name.replace(/^[^\[]*\[[^\]]*\]\s*/, "").trim() || name
 }
 
 // GPU lines (amdgpu sysfs): card|busy|vram_used|vram_total|temp|power (µW)

@@ -858,10 +858,21 @@ Panel {
                   fraction: Model.gpuMemTotal(modelData) > 0 ? Model.gpuMemUsed(modelData) / Model.gpuMemTotal(modelData) : 0
                 }
 
+                // The pool's two halves, with used figures — these are the
+                // numbers radeontop/sysfs show, so users can reconcile
+                // them. A near-full carve-out is normal on an APU: the
+                // driver spills to GTT transparently.
                 DetailRow {
-                  label: "Shared with system RAM"
+                  label: "VRAM (reserved carve-out)"
                   value: modelData.apu === true
-                    ? Model.fmtBytes(modelData.vramTotal) + " reserved + " + Model.fmtBytes(modelData.gttTotal) + " GTT"
+                    ? Model.fmtBytes(modelData.vramUsed) + " of " + Model.fmtBytes(modelData.vramTotal)
+                    : ""
+                }
+
+                DetailRow {
+                  label: "GTT (shared system RAM)"
+                  value: modelData.apu === true
+                    ? Model.fmtBytes(modelData.gttUsed) + " of " + Model.fmtBytes(modelData.gttTotal)
                     : ""
                 }
 

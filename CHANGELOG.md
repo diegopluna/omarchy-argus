@@ -4,6 +4,20 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [0.9.1] — 2026-08-29
+
+### Fixed
+- GPUs whose lspci name carries only a vendor bracket ("Advanced Micro
+  Devices, Inc. [AMD/ATI] Phoenix1") displayed as "AMD/ATI"; the vendor
+  tag is now stripped so the chip name shows.
+- The APU memory rows now state both halves of the pool with their used
+  figures — "VRAM (reserved carve-out) 483 MB of 512 MB" and "GTT
+  (shared system RAM) 587 MB of 16 GB" — instead of totals only, so the
+  pooled meter reconciles against what radeontop and sysfs report. The
+  meter itself still covers the pool: a near-full carve-out is normal on
+  an APU (the driver spills to GTT transparently), and only pool
+  pressure is real memory pressure.
+
 ## [0.9.0] — 2026-08-29
 
 ### Changed
