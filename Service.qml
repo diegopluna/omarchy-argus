@@ -539,10 +539,13 @@ Singleton {
   readonly property var mango: Model.normalizeMango(settings ? settings.mangoHud : null)
   readonly property string mangoConfPath: stateDir + "/mangohud.conf"
   property bool mangohudInstalled: false
-  // The shell session's env is the best available proxy for whether
-  // games will inherit the global-injection variables.
+  // Setup model: only MANGOHUD_CONFIGFILE is session-global; activation
+  // (MANGOHUD=1) is per-game, because the Vulkan layer loads into EVERY
+  // Vulkan process — a global MANGOHUD=1 crashed the shell itself
+  // (libMangoHud segfault in quickshell's vkCreateDevice). The session
+  // env is the proxy for whether the config path reaches games.
   readonly property bool mangoInjectionReady:
-    Quickshell.env("MANGOHUD") === "1" && Quickshell.env("MANGOHUD_CONFIGFILE") === mangoConfPath
+    Quickshell.env("MANGOHUD_CONFIGFILE") === mangoConfPath
 
   readonly property string mangoConf: Model.mangohudConfig(mango, {
     text: Model.mangoColor(Color.foreground),

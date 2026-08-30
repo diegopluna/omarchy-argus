@@ -2534,7 +2534,7 @@ Panel {
                 // mpv does. (An inline literal made every click match
                 // itself and exit before launching.)
                 onClicked: Quickshell.execDetached(["sh", "-c",
-                  'pgrep -f "wayland-app-id=$2" >/dev/null && exit 0; exec env MANGOHUD=1 MANGOHUD_CONFIGFILE="$1" mpv --loop=inf --really-quiet --wayland-app-id="$2" --geometry=960x540 --vo=gpu-next --gpu-api=vulkan "av://lavfi:testsrc2=size=960x540:rate=60"',
+                  'pgrep -f "wayland-app-id=$2" >/dev/null && exit 0; exec env -u DISABLE_MANGOHUD MANGOHUD=1 MANGOHUD_CONFIGFILE="$1" mpv --loop=inf --really-quiet --wayland-app-id="$2" --geometry=960x540 --vo=gpu-next --gpu-api=vulkan "av://lavfi:testsrc2=size=960x540:rate=60"',
                   "argus-preview", Service.mangoConfPath, "argus-hud-preview"])
               }
 
@@ -2549,9 +2549,9 @@ Panel {
             Text {
               visible: Service.mango.enabled && !Service.mangoInjectionReady
               width: parent.width
-              text: "One-time setup — add to ~/.config/hypr/hyprland.conf so every Vulkan/Proton game picks the HUD up automatically, then log out and in:\n"
-                + "env = MANGOHUD,1\n"
-                + "env = MANGOHUD_CONFIGFILE," + Service.mangoConfPath
+              text: "One-time setup — add to ~/.config/hypr/hyprland.lua, then run `hyprctl reload` (this status updates after the shell restarts):\n"
+                + "hl.env(\"MANGOHUD_CONFIGFILE\", os.getenv(\"HOME\") .. \"/.local/state/argus/mangohud.conf\")\n"
+                + "Do NOT set MANGOHUD=1 globally — the layer would load into every Vulkan app, the shell included. Enable per game instead (below)."
               textFormat: Text.PlainText
               color: root.dim
               font.family: root.fontFamily
@@ -2562,7 +2562,7 @@ Panel {
             Text {
               visible: Service.mango.enabled && Service.mangoInjectionReady
               width: parent.width
-              text: "Global injection active — every Vulkan/Proton game gets the HUD. Toggle it in-game with " + Service.mango.hotkey + "."
+              text: "Config path active. Per game, set Steam Launch Options to: MANGOHUD=1 %command% — the HUD appears with this styling; toggle in-game with " + Service.mango.hotkey + "."
               textFormat: Text.PlainText
               color: root.dim
               font.family: root.fontFamily

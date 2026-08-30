@@ -4,6 +4,23 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [1.2.2] — 2026-08-30
+
+### Fixed
+- **The recommended MangoHud setup was dangerous and is now scoped.**
+  The docs and GAME tab previously suggested session-global
+  `MANGOHUD=1`, which loads the Vulkan layer into every Vulkan process
+  — including the Omarchy shell, where libMangoHud segfaulted inside
+  quickshell's `vkCreateDevice` and crash-looped the whole desktop.
+  The corrected model: session-global env carries only the config path
+  plus a hard-off (`MANGOHUD=0` — the loader's enable check requires
+  exactly "1", verified empirically — and `MANGOHUD_CONFIGFILE=...`,
+  via `hl.env` in hyprland.lua; the old `env =` conf syntax does
+  nothing on current Omarchy and fails silently); activation is
+  strictly per game (`MANGOHUD=1 %command%` in Steam launch options). The GAME tab's status
+  line and setup instructions teach the scoped model, and its
+  readiness check now tracks the config path.
+
 ## [1.2.1] — 2026-08-29
 
 ### Fixed

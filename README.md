@@ -215,14 +215,35 @@ and every change applies **live** to running games via
 (`~/.local/state/argus/mangohud.conf`) and never touches your
 `MangoHud.conf`.
 
-For RivaTuner-style "works in every game automatically" behavior, add
-two lines to `~/.config/hypr/hyprland.conf` (one-time; log out and in
-afterwards):
+Setup is two parts, and the split matters:
+
+**Once, session-wide** — the config *path* only. Add to
+`~/.config/hypr/hyprland.lua`, then `hyprctl reload`:
+
+```lua
+hl.env("MANGOHUD", "0")
+hl.env("MANGOHUD_CONFIGFILE", os.getenv("HOME") .. "/.local/state/argus/mangohud.conf")
+```
+
+**Per game** — the activation. Steam → game → Properties → Launch
+Options:
 
 ```
-env = MANGOHUD,1
-env = MANGOHUD_CONFIGFILE,/home/YOU/.local/state/argus/mangohud.conf
+MANGOHUD=1 %command%
 ```
+
+**Do not set `MANGOHUD=1` session-wide.** It looks convenient, but the
+Vulkan layer then loads into *every* Vulkan process — browsers, video
+players, and the Omarchy shell itself, which it can crash (found the
+hard way: a libMangoHud segfault in quickshell's `vkCreateDevice` took
+the whole desktop down in a crash loop). The per-game line is seven
+characters of one-time typing per title and scopes the layer to actual
+games.
+
+(Also note: `env = ...` lines in `hyprland.conf` do **nothing** on
+current Omarchy — the Lua config is the live one and the old syntax
+fails silently. On pre-Quattro Omarchy, set the config-path variable
+with `env = MANGOHUD_CONFIGFILE,...` there and re-log instead.)
 
 MangoHud is a Vulkan implicit layer, and Proton runs everything through
 DXVK/vkd3d — so this covers essentially your whole library with no
