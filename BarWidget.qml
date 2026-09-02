@@ -43,30 +43,33 @@ Panel {
   readonly property bool placeholderOnly: barSegs.length === 0
 
   // "#aarrggbb" → "#rrggbb": styled-text font tags reject the alpha form.
+  // Still used by SpanCaption, which is a Text of its own with an explicit
+  // textFormat and can therefore carry markup safely.
   function colorHex(c) {
     var s = String(c)
     return s.length === 9 ? "#" + s.slice(3) : s
   }
 
-  // Plain text normally; when a segment crosses its threshold, styled text
-  // with per-segment <font> colors (the string starts with a tag so the
-  // label's AutoText detection reliably switches to StyledText).
+  readonly property bool anyUrgent: {
+    for (var i = 0; i < barSegs.length; i++) if (barSegs[i].urgent) return true
+    return false
+  }
+
+  // Always plain, never markup. WidgetButton's label is Text.PlainText, so a
+  // <font> tag renders as the literal characters "<font color=...>" in the bar
+  // rather than colouring anything. Per-segment colour is painted by segmentRow
+  // below instead — the same approach the vertical bar already takes.
+  //
+  // This string stays the button's `text` even while segmentRow is what shows,
+  // because WidgetButton derives implicitWidth and hasVisualContent from it.
   readonly property string displayText: {
     if (placeholderOnly) return Model.PLACEHOLDER_ICON
-    var anyUrgent = false
-    var i
-    for (i = 0; i < barSegs.length; i++) if (barSegs[i].urgent) anyUrgent = true
     var parts = []
-    if (!anyUrgent) {
-      for (i = 0; i < barSegs.length; i++) parts.push(barSegs[i].text)
-      return parts.join("  ")
-    }
-    for (i = 0; i < barSegs.length; i++) {
-      parts.push("<font color=\"" + colorHex(barSegs[i].urgent ? root.urgent : root.foreground) + "\">"
-        + barSegs[i].text + "</font>")
-    }
-    return parts.join("&#160;&#160;")
+    for (var i = 0; i < barSegs.length; i++) parts.push(barSegs[i].text)
+    return parts.join(segmentGap)
   }
+
+  readonly property string segmentGap: "  "
 
   readonly property var verticalLines: Service.ready
     ? Model.barLines(shownKeys, Service.barData, thresholds)
@@ -541,7 +544,9 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     text: root.bar && root.bar.vertical ? "" : root.displayText
-    labelVisible: !(root.bar && root.bar.vertical) && !root.placeholderOnly
+    // The label handles the common case; segmentRow takes over only when a
+    // threshold is crossed and one segment must differ in colour from the rest.
+    labelVisible: !(root.bar && root.bar.vertical) && !root.placeholderOnly && !root.anyUrgent
     hasVisualContent: root.bar && root.bar.vertical ? root.verticalLines.length > 0 : text !== ""
     fixedWidth: !(root.bar && root.bar.vertical) && root.placeholderOnly ? Style.bar.iconSlot : -1
     fixedHeight: root.bar && root.bar.vertical ? root.verticalLines.length * Style.bar.iconSlot : -1
@@ -591,6 +596,38 @@ Panel {
         id: blinkAnim
         NumberAnimation { target: placeholderEye; property: "blinkY"; to: 0.08; duration: 70 }
         NumberAnimation { target: placeholderEye; property: "blinkY"; to: 1; duration: 110 }
+      }
+    }
+
+    // Measured rather than guessed: the gap has to match what the label would
+    // have painted for segmentGap, or the widget changes width the moment a
+    // threshold is crossed.
+    TextMetrics {
+      id: gapMetrics
+      font.family: button.fontFamily
+      font.pixelSize: button.fontSize
+      text: root.segmentGap
+    }
+
+    Row {
+      id: segmentRow
+      visible: !(root.bar && root.bar.vertical) && !root.placeholderOnly && root.anyUrgent
+      anchors.centerIn: parent
+      spacing: gapMetrics.width
+
+      Repeater {
+        model: root.barSegs
+
+        Text {
+          required property var modelData
+          textFormat: Text.PlainText
+          text: modelData.text
+          color: modelData.urgent ? root.urgent : button.foreground
+          font.family: button.fontFamily
+          font.pixelSize: button.fontSize
+          renderType: Text.NativeRendering
+          verticalAlignment: Text.AlignVCenter
+        }
       }
     }
 

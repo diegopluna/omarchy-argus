@@ -4,6 +4,23 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **The bar showed raw `<font color="...">` markup once a threshold was
+  crossed.** The urgent path built the bar string with per-segment
+  `<font>` tags and relied on the label's `AutoText` detection to switch
+  to `StyledText`. Omarchy's `Ui/WidgetButton` now pins its label to
+  `textFormat: Text.PlainText`, so those tags render as literal
+  characters and the whole widget becomes unreadable exactly when it
+  most needs to be read. Per-segment colour is now painted by a `Row` of
+  `Text` items — the same markup-free approach the vertical bar already
+  used — and `displayText` is always plain. The label still carries that
+  plain string even while the row is what shows, because `WidgetButton`
+  derives `implicitWidth` and `hasVisualContent` from `text`; the row's
+  spacing comes from a `TextMetrics` measurement of the separator so the
+  widget does not change width the moment a threshold is crossed.
+
 ## [1.2.2] — 2026-08-30
 
 ### Fixed
