@@ -1,0 +1,14 @@
+[Unit]
+Description=Argus Intel GPU collector (intel_gpu_top daemon)
+Documentation=https://github.com/zimixin/omarchy-argus
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.config/omarchy/plugins/io.github.diegopluna.argus/bin/intel-gpu-collector.sh %h/.local/state/argus/intel-gpu.csv
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

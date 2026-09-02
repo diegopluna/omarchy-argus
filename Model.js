@@ -756,8 +756,11 @@ function gpuMemTotal(gpu) {
   return gpu.apu ? (gpu.vramTotal || 0) + (gpu.gttTotal || 0) : (gpu.vramTotal || 0)
 }
 
-// GPUINTEL lines: card|temp|power (µW). i915/xe expose no busy counter,
-// so usage is NaN and the panel says so instead of showing zeros.
+// GPUINTEL lines: `card|temp|power` (upstream, power µW, usage NaN) OR
+// `card|temp|power(W)|busy|freq(MHz)` (zimixin fork with the intel_gpu_top
+// daemon — power already in watts, busy% real from RC6). i915/xe expose no
+// unprivileged busy counter, so without the daemon usage is NaN and the
+// panel says so instead of showing zeros.
 function parseIntelGpus(lines, names) {
   var result = []
   for (var i = 0; i < lines.length; i++) {
@@ -768,17 +771,23 @@ function parseIntelGpus(lines, names) {
     // ("Raptor Lake-P"); say what the card is instead. Real product
     // names (UHD/Iris Xe/Arc) pass through.
     if (!/graphics|iris|arc|xe|uhd|hd/i.test(name)) name = "Intel Integrated Graphics"
-    result.push({
+    // Extended daemon line (5 fields): busy at parts[3], freq at parts[4].
+    var hasDaemon = parts.length >= 5 && parts[3] !== "" && parts[3] !== undefined
+    var gpu = {
       card: parts[0],
       label: "GPU " + parts[0] + " (Intel)",
-      busy: NaN,
-      noBusyCounter: true,
+      busy: hasDaemon ? (Number(parts[3]) || 0) : NaN,
+      noBusyCounter: !hasDaemon,
       vramUsed: 0,
       vramTotal: 0,
       celsius: parts[1] !== "" ? Number(parts[1]) / 1000 : NaN,
-      powerW: parts[2] !== "" ? Number(parts[2]) / 1e6 : NaN,
-      name: name
-    })
+      powerW: parts[2] !== "" ? Number(parts[2]) : NaN,
+      name: name,
+      freqMhz: hasDaemon && parts[4] !== "" ? (Number(parts[4]) || 0) : NaN
+    }
+    // Fork line carries power in watts; upstream line carries µW.
+    if (!hasDaemon && parts[2] !== "") gpu.powerW = Number(parts[2]) / 1e6
+    result.push(gpu)
   }
   return result
 }
