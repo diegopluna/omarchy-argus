@@ -48,24 +48,21 @@ Panel {
     return s.length === 9 ? "#" + s.slice(3) : s
   }
 
-  // Plain text normally; when a segment crosses its threshold, styled text
-  // with per-segment <font> colors (the string starts with a tag so the
-  // label's AutoText detection reliably switches to StyledText).
+  readonly property bool hasUrgent: {
+    for (var i = 0; i < barSegs.length; i++) {
+      if (barSegs[i].urgent) return true
+    }
+    return false
+  }
+
+  // WidgetButton pins its label to PlainText, so styled tags would be
+  // displayed literally. Instead, displayText outputs clean plain text
+  // and WidgetButton.active is set when any segment crosses its threshold.
   readonly property string displayText: {
     if (placeholderOnly) return Model.PLACEHOLDER_ICON
-    var anyUrgent = false
-    var i
-    for (i = 0; i < barSegs.length; i++) if (barSegs[i].urgent) anyUrgent = true
     var parts = []
-    if (!anyUrgent) {
-      for (i = 0; i < barSegs.length; i++) parts.push(barSegs[i].text)
-      return parts.join("  ")
-    }
-    for (i = 0; i < barSegs.length; i++) {
-      parts.push("<font color=\"" + colorHex(barSegs[i].urgent ? root.urgent : root.foreground) + "\">"
-        + barSegs[i].text + "</font>")
-    }
-    return parts.join("&#160;&#160;")
+    for (var i = 0; i < barSegs.length; i++) parts.push(barSegs[i].text)
+    return parts.join("  ")
   }
 
   readonly property var verticalLines: Service.ready
@@ -540,6 +537,7 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
+    active: root.hasUrgent
     text: root.bar && root.bar.vertical ? "" : root.displayText
     labelVisible: !(root.bar && root.bar.vertical) && !root.placeholderOnly
     hasVisualContent: root.bar && root.bar.vertical ? root.verticalLines.length > 0 : text !== ""
