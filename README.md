@@ -312,8 +312,15 @@ VRAM — is an APU, so its memory pool is carve-out + GTT),
 over D-Bus for drive SMART health. NVIDIA GPUs
 are read through `nvidia-smi --query-gpu=... --format=csv,noheader,nounits`
 and Intel GPUs (i915/xe) through their hwmon temperature/power — Intel
-exposes no unprivileged busy counter, so usage is honestly marked
-unavailable rather than shown as zero. nvidia-smi is
+exposes no unprivileged busy counter, so upstream marks usage unavailable
+rather than shown as zero. **zimixin fork:** on Intel hosts the real GPU
+busy/power/frequency are sampled by a background `intel_gpu_top` daemon
+(systemd --user unit `omarchy-argus-intel-gpu.service`, enabled at session
+login) writing a CSV that `sample.sh` reads each tick — busy% derived as
+100−RC6, plus GPU power (W) and clock (MHz). Requires `intel_gpu_top`
+(`intel-gpu-tools`) granted CAP_PERFMON: `sudo setcap cap_perfmon=ep
+/usr/bin/intel_gpu_top`. Without the service, Intel busy falls back to the
+honest NaN/unavailable above. nvidia-smi is
 invoked only when `/proc/driver/nvidia/version` shows the driver is loaded,
 guarded by a 3-second timeout; `[N/A]` fields (e.g. utilization on some
 GPUs) degrade gracefully. While every NVIDIA card is runtime-suspended

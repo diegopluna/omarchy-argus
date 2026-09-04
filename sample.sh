@@ -303,6 +303,14 @@ done
 echo '###GPUINTEL'
 # Intel cards (i915/xe) expose no gpu_busy_percent; hwmon still provides
 # temperature and (on Arc) power, so show what exists.
+#
+# Since v1.3.0 (zimixin fork) Intel busy/power are sampled through a
+# background intel_gpu_top daemon: i915/xe have no unprivileged busy
+# counter, but intel_gpu_top (with CAP_PERFMON) reads the real engines.
+# Emit the daemon's latest reading (busy% = 100 - RC6, freq MHz, GPU power
+# W) in the GPUINTEL line so the bar/panel show real usage instead of
+# "unavailable". Without the daemon the old `card|temp|power` behaviour
+# (busy=NaN) is kept — graceful on machines without intel_gpu_top.
 for c in /sys/class/drm/card[0-9] /sys/class/drm/card[0-9][0-9]; do
   d="$c/device"
   [ -r "$d/vendor" ] || continue
@@ -321,7 +329,45 @@ for c in /sys/class/drm/card[0-9] /sys/class/drm/card[0-9][0-9]; do
     rline "$p" && power=$REPLY
     break
   done
-  echo "${c##*/card}|$temp|$power"
+
+  # --- intel_gpu_top daemon data (zimixin fork) ---
+  busy=""; freq=""; igt_power=""
+  STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/argus"
+  CSV="$STATE_DIR/intel-gpu.csv"
+  # Daemon is a systemd --user unit (`omarchy-argus-intel-gpu.service`),
+  # enabled at session login; sample.sh only READS its CSV output. If the
+  # service is stopped the CSV goes stale and busy stays NaN (the honest
+  # upstream fallback) — no sample.sh ever spawns a collector, so there are
+  # exactly 0 or 1 daemons, owned by systemd.
+  # Fresh CSV (< 10s stale) -> take its last data line. intel_gpu_top
+  # writes CRLF, and the \r turns grep/awk line-reads flaky (binary-file
+  # match), so strip \r and take the literal last line — always the newest
+  # sample once the file has any. A file with only the header returns the
+  # header, which the freq_Numeric guard below drops (starts with "Freq").
+  if [ -s "$CSV" ] && [ $(( $(date +%s) - $(stat -c %Y "$CSV") )) -lt 10 ]; then
+    last_line="$(tail -n 1 "$CSV" | tr -d '\r')"
+    case "$last_line" in
+      Freq*) last_line="" ;;
+    esac
+    if [ -n "$last_line" ]; then
+      # columns: freq_req, freq_act, irq, rc6, p_gpu, p_pkg, rcs.., bcs.., vcs.., vecs..
+      freq_act="$(echo "$last_line" | cut -d, -f2)"
+      rc6="$(echo "$last_line" | cut -d, -f4)"
+      p_gpu="$(echo "$last_line" | cut -d, -f5)"
+      # busy% ≈ 100 - RC6, clamped to [0,100]
+      busy=$(awk -v rc="$rc6" 'BEGIN{v=100-rc; if(v<0)v=0; if(v>100)v=100; printf "%d", v}')
+      freq=$(awk -v f="$freq_act" 'BEGIN{printf "%d", f}')
+      igt_power=$(awk -v p="$p_gpu" 'BEGIN{printf "%.3f", p}')
+    fi
+  fi
+  # Power: prefer intel_gpu_top's real GPU power (W); hwmon power on Intel
+  # iGPUs is usually absent. Busy/freq only from the daemon. Sample line:
+  #   card|temp(mC)|power(W)|busy|freq(MHz)
+  if [ -n "$igt_power" ]; then
+    echo "${c##*/card}|$temp|$igt_power|$busy|$freq"
+  else
+    echo "${c##*/card}|$temp|$power"
+  fi
 done
 
 echo '###NVIDIA'
