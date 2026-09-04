@@ -35,6 +35,10 @@ var DEFAULT_THRESHOLDS = {
 
 var ICON_DOWN = "\u{f0045}" // 󰁅
 var ICON_UP = "\u{f005d}"   // 󰁝
+// One no-break space between a direction arrow and its value so the glyph
+// never touches the digit. Paired with right-padding (padValueRight) below,
+// this keeps the arrow-to-value gap identical whatever the rate's width.
+var ICON_GAP = "\u00a0"
 
 function metricByKey(key) {
   for (var i = 0; i < METRICS.length; i++) if (METRICS[i].key === key) return METRICS[i]
@@ -1671,6 +1675,14 @@ function padValue(text, width) {
   return s
 }
 
+// Right-pad variant: keeps the value left-anchored so an arrow prefix sits a
+// constant gap from the first digit regardless of the value's own width.
+function padValueRight(text, width) {
+  var s = String(text)
+  while (s.length < width) s = s + PAD_SPACE
+  return s
+}
+
 // The short value a metric shows in the bar, or "" to hide the segment
 // (e.g. GPU metrics on a machine without a supported GPU, battery on a
 // desktop, an asleep NVIDIA card). With `pad`, values are no-break-space
@@ -1681,6 +1693,7 @@ function metricValue(key, data, pad) {
   // between "0" and "9.9M" constantly, so they pad to 4.
   function p3(s) { return pad && s !== "" ? padValue(s, 3) : s }
   function p4(s) { return pad ? padValue(s, 4) : s }
+  function p4r(s) { return pad ? padValueRight(s, 4) : s }
   switch (key) {
     case "cpu": return p3(fmtPct(data.cpuPct))
     case "cputemp": return isFinite(data.cpuTemp) ? p3(fmtTemp(data.cpuTemp)) : ""
@@ -1690,7 +1703,7 @@ function metricValue(key, data, pad) {
     case "vram": return data.gpu && !data.gpu.asleep && gpuMemTotal(data.gpu) > 0 ? p3(fmtPct(100 * gpuMemUsed(data.gpu) / gpuMemTotal(data.gpu))) : ""
     case "disk": return data.disk ? p3(fmtPct(100 * data.disk.used / data.disk.size)) : ""
     case "io": return data.io ? "R" + p4(fmtRateShort(data.io.read)) + " W" + p4(fmtRateShort(data.io.write)) : ""
-    case "net": return ICON_DOWN + p4(fmtRateShort(data.netDown)) + " " + ICON_UP + p4(fmtRateShort(data.netUp))
+    case "net": return ICON_DOWN + ICON_GAP + p4r(fmtRateShort(data.netDown)) + " " + ICON_UP + ICON_GAP + p4r(fmtRateShort(data.netUp))
     case "load": return data.load1.toFixed(2)
     case "bat": return data.battery && isFinite(data.battery.pct)
       ? batteryIcon(data.battery.pct, data.battery.charging) + " " + p3(fmtPct(data.battery.pct))
