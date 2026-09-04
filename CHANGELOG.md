@@ -4,9 +4,14 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.2.3] — 2026-09-04
 
 ### Fixed
+- **Network direction arrows now keep a consistent gap before their
+  values.** Download and upload rates are right-padded with an explicit
+  no-break space after each arrow, so four-character values such as
+  `3.8K` no longer touch the glyph while the bar segment keeps a stable
+  width.
 - **The bar showed raw `<font color="...">` markup once a threshold was
   crossed.** The urgent path built the bar string with per-segment
   `<font>` tags and relied on the label's `AutoText` detection to switch
