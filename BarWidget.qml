@@ -48,19 +48,14 @@ Panel {
     return s.length === 9 ? "#" + s.slice(3) : s
   }
 
-  // Always styled text with per-segment <font> colors (urgent segment gets
-  // the urgent color, the rest foreground) and a single nbsp separator, so
-  // crossing a threshold recolors one segment instead of rebuilding the whole
-  // bar line between plain and styled form. (The string starts with a tag so
-  // the label's AutoText detection reliably switches to StyledText.)
+  // Always plain text, segments joined by two spaces. No styled-text mode and
+  // no per-threshold reformat, so the bar never flickers and never shows an
+  // always-on colored/HTML form — crossing a threshold just changes the value.
   readonly property string displayText: {
     if (placeholderOnly) return Model.PLACEHOLDER_ICON
     var parts = []
-    for (var i = 0; i < barSegs.length; i++) {
-      parts.push("<font color=\"" + colorHex(barSegs[i].urgent ? root.urgent : root.foreground) + "\">"
-        + barSegs[i].text + "</font>")
-    }
-    return parts.join("&#160;&#160;")
+    for (var i = 0; i < barSegs.length; i++) parts.push(barSegs[i].text)
+    return parts.join("  ")
   }
 
   readonly property var verticalLines: Service.ready
