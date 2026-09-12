@@ -86,6 +86,24 @@ if (!CI) {
   assert.ok(io.perDisk.every(d => !/p\d+$/.test(d.dev)), "partitions filtered out")
 }
 
+// Bundle mounts (an AppImage's squashfs image shown as fuse.<appname> under
+// $TMPDIR/.mount_*, a mounted image under /var/tmp) are not filesystems the
+// user keeps data on. Devices — even mounted under a temp dir — and network
+// shares keep their row.
+assert.deepStrictEqual(
+  Model.parseSample("###DF\n" + [
+    "/dev/mapper/root 1000000000 400000000 /",
+    "/dev/nvme0n1p5 2143281152 162926592 /boot",
+    "monocloud.AppImage 118358016 118358016 /tmp/.mount_monocljldmIm",
+    "backup.img 500000000 100000000 /var/tmp/backup",
+    "host:/export 900000000 100000000 /mnt/net",
+    "//nas/share 900000000 100000000 /mnt/share",
+    "/dev/sdb1 500000000 100000000 /tmp/backup"
+  ].join("\n")).disks.map(d => d.mount),
+  ["/", "/boot", "/mnt/net", "/mnt/share", "/tmp/backup"],
+  "bundles dropped, devices and shares kept")
+if (!CI) assert.ok(sample.disks.every(d => !/^\/tmp\/\.mount_/.test(d.mount)), "live sample carries no bundle mounts")
+
 const gpu = Model.primaryGpu(sample.gpus)
 if (sample.gpus.length > 0) {
   assert.ok(gpu.vramTotal >= 0)

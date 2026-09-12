@@ -31,6 +31,14 @@ follow [Semantic Versioning](https://semver.org/).
   instead of "0 B".
 
 ### Fixed
+- **Bundle mounts no longer appear as filesystems.** An AppImage mounts
+  its own squashfs image (as `fuse.<appname>` under `$TMPDIR/.mount_*`) and
+  `df` happily lists it, so the DISK tab and the disk metric carried a
+  phantom ~118 MB "filesystem" for a running bundle — and one appeared in
+  the fixture corpus too. Mounts under a temp dir whose source is neither
+  a device nor a network share are now skipped. Real FUSE storage (sshfs,
+  rclone, ntfs-3g), a loop device, and anything mounted on purpose under
+  `/tmp` (the source is a device) keep their row.
 - **GPU names fell back to a generic label on every tick.** Since 1.1.0's
   static/dynamic split, the parsed static context carried disk models,
   links, PCI addresses and CPU topology — but not the lspci GPU names, so

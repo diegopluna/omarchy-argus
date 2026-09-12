@@ -460,8 +460,21 @@ function parseNet(lines) {
   return result
 }
 
-// One row per underlying device, keyed by source; the shortest mount point
-// wins so btrfs subvolume mounts collapse into "/".
+// A filesystem mounted under a temp dir from something that isn't a device
+// (or a network share) is a bundle showing itself to the desktop, not
+// somewhere the user keeps data: an AppImage mounts its own squashfs image
+// as fuse.<appname> at $TMPDIR/.mount_*, and a manually mounted image does
+// the same. Real FUSE storage — sshfs, rclone, ntfs-3g — lives in a real
+// mount point, and a loop device is still a device, so both keep their row.
+function isBundleMount(entry) {
+  if (!/^\/(var\/)?tmp\//.test(entry.mount)) return false
+  if (/^\/dev\//.test(entry.source)) return false
+  if (entry.source.indexOf(":") !== -1) return false
+  return entry.source.indexOf("//") !== 0
+}
+
+// Parse df lines into one row per underlying device, keyed by source; the
+// shortest mount point wins so btrfs subvolume mounts collapse into "/".
 function parseDf(lines) {
   var bySource = {}
   var order = []
@@ -475,6 +488,7 @@ function parseDf(lines) {
       mount: parts.slice(3).join(" ")
     }
     if (entry.size <= 0) continue
+    if (isBundleMount(entry)) continue
     var existing = bySource[entry.source]
     if (!existing) {
       bySource[entry.source] = entry
