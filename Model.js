@@ -757,8 +757,8 @@ function gpuMemTotal(gpu) {
 }
 
 // GPUINTEL lines: `card|temp|power` (upstream, power µW, usage NaN) OR
-// `card|temp|power(W)|busy|freq(MHz)` (zimixin fork with the intel_gpu_top
-// daemon — power already in watts, busy% real from RC6). i915/xe expose no
+// `card|temp|power(W)|busy|freq(MHz)` (with the intel_gpu_top daemon —
+// power already in watts, busy% = most-active engine class). i915/xe expose no
 // unprivileged busy counter, so without the daemon usage is NaN and the
 // panel says so instead of showing zeros.
 function parseIntelGpus(lines, names) {

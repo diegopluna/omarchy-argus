@@ -312,15 +312,18 @@ VRAM — is an APU, so its memory pool is carve-out + GTT),
 over D-Bus for drive SMART health. NVIDIA GPUs
 are read through `nvidia-smi --query-gpu=... --format=csv,noheader,nounits`
 and Intel GPUs (i915/xe) through their hwmon temperature/power — Intel
-exposes no unprivileged busy counter, so upstream marks usage unavailable
-rather than shown as zero. **zimixin fork:** on Intel hosts the real GPU
-busy/power/frequency are sampled by a background `intel_gpu_top` daemon
-(systemd --user unit `omarchy-argus-intel-gpu.service`, enabled at session
-login) writing a CSV that `sample.sh` reads each tick — busy% derived as
-100−RC6, plus GPU power (W) and clock (MHz). Requires `intel_gpu_top`
-(`intel-gpu-tools`) granted CAP_PERFMON: `sudo setcap cap_perfmon=ep
-/usr/bin/intel_gpu_top`. Without the service, Intel busy falls back to the
-honest NaN/unavailable above. nvidia-smi is
+exposes no unprivileged busy counter, so usage is unavailable rather than
+shown as zero. **Optional Intel telemetry:** on Intel hosts the real GPU
+busy/power/frequency can be sampled by a background `intel_gpu_top` daemon
+(a per-user systemd unit `omarchy-argus-intel-gpu.service`, set up with
+`bin/install-intel-gpu.sh`) that writes a per-card CSV under the XDG state
+directory, which `sample.sh` reads each tick — busy% is the most-active
+engine class (RCS/BCS/VCS/VECS), plus GPU power (W) and clock (MHz). It
+requires `intel-gpu-tools` with `intel_gpu_top` granted CAP_PERFMON
+(`sudo setcap cap_perfmon=ep /usr/bin/intel_gpu_top`); on i915/xe there is
+no GPU temperature sensor, so the temp field falls back to the coretemp
+package reading. Without the daemon, Intel busy falls back to the honest
+NaN/unavailable above. Remove with `bin/uninstall-intel-gpu.sh`. nvidia-smi is
 invoked only when `/proc/driver/nvidia/version` shows the driver is loaded,
 guarded by a 3-second timeout; `[N/A]` fields (e.g. utilization on some
 GPUs) degrade gracefully. While every NVIDIA card is runtime-suspended

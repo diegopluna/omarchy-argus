@@ -304,11 +304,11 @@ echo '###GPUINTEL'
 # Intel cards (i915/xe) expose no gpu_busy_percent; hwmon still provides
 # temperature and (on Arc) power, so show what exists.
 #
-# Since v1.3.0 (zimixin fork) Intel busy/power are sampled through a
-# background intel_gpu_top daemon: i915/xe have no unprivileged busy
-# counter, but intel_gpu_top (with CAP_PERFMON) reads the real engines.
-# Emit the daemon's latest reading (busy% = 100 - RC6, freq MHz, GPU power
-# W) in the GPUINTEL line so the bar/panel show real usage instead of
+# Since this feature Intel busy/power are sampled through a background
+# intel_gpu_top daemon: i915/xe have no unprivileged busy counter, but
+# intel_gpu_top (with CAP_PERFMON) reads the real engines. Emit the daemon's
+# latest reading (busy% = most-active engine class, freq MHz, GPU power W)
+# in the GPUINTEL line so the bar/panel show real usage instead of
 # "unavailable". Without the daemon the old `card|temp|power` behaviour
 # (busy=NaN) is kept — graceful on machines without intel_gpu_top.
 for c in /sys/class/drm/card[0-9] /sys/class/drm/card[0-9][0-9]; do
@@ -343,32 +343,35 @@ for c in /sys/class/drm/card[0-9] /sys/class/drm/card[0-9][0-9]; do
     break
   done
 
-  # --- intel_gpu_top daemon data (zimixin fork) ---
+  # --- intel_gpu_top daemon data ---
   busy=""; freq=""; igt_power=""
   STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/argus"
-  CSV="$STATE_DIR/intel-gpu.csv"
-  # Daemon is a systemd --user unit (`omarchy-argus-intel-gpu.service`),
-  # enabled at session login; sample.sh only READS its CSV output. If the
-  # service is stopped the CSV goes stale and busy stays NaN (the honest
-  # upstream fallback) — no sample.sh ever spawns a collector, so there are
-  # exactly 0 or 1 daemons, owned by systemd.
+  CSV="$STATE_DIR/intel-gpu-${c##*/card}.csv"
+  # The daemon is a systemd --user unit (`omarchy-argus-intel-gpu.service`),
+  # set up via bin/install-intel-gpu.sh; sample.sh only READS its per-card
+  # CSV output, keyed by card so multi-Intel-GPU systems don't misattribute
+  # one card's telemetry to another. If the service is stopped the CSV goes
+  # stale and busy stays NaN (the honest upstream fallback) — no sample.sh
+  # ever spawns a collector, so ownership stays with systemd (≤1 per card).
   # Fresh CSV (< 10s stale) -> take its last data line. intel_gpu_top
   # writes CRLF, and the \r turns grep/awk line-reads flaky (binary-file
   # match), so strip \r and take the literal last line — always the newest
   # sample once the file has any. A file with only the header returns the
-  # header, which the freq_Numeric guard below drops (starts with "Freq").
+  # header, which the guard below drops (starts with "Freq").
   if [ -s "$CSV" ] && [ $(( $(date +%s) - $(stat -c %Y "$CSV") )) -lt 10 ]; then
     last_line="$(tail -n 1 "$CSV" | tr -d '\r')"
     case "$last_line" in
       Freq*) last_line="" ;;
     esac
     if [ -n "$last_line" ]; then
-      # columns: freq_req, freq_act, irq, rc6, p_gpu, p_pkg, rcs.., bcs.., vcs.., vecs..
+      # columns: freq_req, freq_act, irq, rc6, p_gpu, p_pkg,
+      #          rcs%, rcs_se, rcs_wa, bcs%, bcs_se, bcs_wa, vcs%, ..., vecs% ...
       freq_act="$(echo "$last_line" | cut -d, -f2)"
-      rc6="$(echo "$last_line" | cut -d, -f4)"
       p_gpu="$(echo "$last_line" | cut -d, -f5)"
-      # busy% ≈ 100 - RC6, clamped to [0,100]
-      busy=$(awk -v rc="$rc6" 'BEGIN{v=100-rc; if(v<0)v=0; if(v>100)v=100; printf "%d", v}')
+      # Utilization = most-active engine class (%: RCS/BCS/VCS/VECS = fields
+      # 7/10/13/16). NOT 100-RC6: RC6 residency hides awake-but-idle time,
+      # so 100-RC6 would report busy while every engine is actually idle.
+      busy=$(echo "$last_line" | awk -F, '{m=0; if($7>m)m=$7; if($10>m)m=$10; if($13>m)m=$13; if($16>m)m=$16; printf "%d", m}')
       freq=$(awk -v f="$freq_act" 'BEGIN{printf "%d", f}')
       igt_power=$(awk -v p="$p_gpu" 'BEGIN{printf "%.3f", p}')
     fi

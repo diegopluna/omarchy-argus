@@ -6,7 +6,7 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/.config/omarchy/plugins/io.github.diegopluna.argus/bin/intel-gpu-collector.sh %h/.local/state/argus/intel-gpu.csv
+ExecStart=%h/.config/omarchy/plugins/io.github.diegopluna.argus/bin/intel-gpu-collector.sh
 Restart=on-failure
 RestartSec=3
 
