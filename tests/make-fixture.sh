@@ -9,8 +9,9 @@
 #
 # Scrubbing: the hostname is replaced, process lists (PS/GPUPROC) are
 # dropped — command lines can carry usernames, private paths and URLs —
-# and NETINFO is dropped (IP addresses, Wi-Fi SSID). Everything else
-# (chip names, drive models, sensor labels) is exactly what makes a
+# NETINFO is dropped (IP addresses, Wi-Fi SSID), and transient AppImage
+# mounts are dropped (they name the app and churn every run). Everything
+# else (chip names, drive models, sensor labels) is exactly what makes a
 # fixture useful. Review the output before contributing it.
 
 cd "$(dirname "$0")/.." || exit 1
@@ -20,5 +21,6 @@ bash sample.sh | awk '
   # PS carries usernames and command lines; NETINFO carries IPs and the
   # Wi-Fi SSID. Drop their content, keep the section headers.
   (section == "PS" || section == "PSCPU" || section == "PSMEM" || section == "GPUPROC" || section == "NETINFO") && !/^###/ { next }
+  section == "DF" && !/^###/ && $4 ~ /^\/tmp\/\.mount_/ { next }
   { print }
 '

@@ -1358,7 +1358,7 @@ Panel {
             Text {
               visible: Service.gpus.length === 0 && !Service.nvidiaSuspended
               width: parent.width
-              text: "No supported GPU detected (amdgpu sysfs or nvidia-smi)."
+              text: "No supported GPU detected (amdgpu sysfs, Intel DRM counters, or nvidia-smi)."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
@@ -1505,7 +1505,11 @@ Panel {
                   DetailRow {
                     required property var modelData
                     label: modelData.comm + " · " + modelData.pid
-                    value: Model.fmtPct(modelData.pct) + " · " + Model.fmtBytes(modelData.vramKib * 1024)
+                    // Intel's fdinfo counts buffer objects in system RAM
+                    // rather than a VRAM region; with no figure to show,
+                    // the row stays usage-only instead of claiming 0 B.
+                    value: Model.fmtPct(modelData.pct)
+                      + (modelData.vramKib > 0 ? " · " + Model.fmtBytes(modelData.vramKib * 1024) : "")
                   }
                 }
               }

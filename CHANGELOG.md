@@ -4,6 +4,52 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Intel GPU usage (i915/xe).** Intel cards expose no busy counter in
+  sysfs, so the GPU tab, the bar metric, its sparkline, the HOME tile,
+  and the GPU alerts used to say "usage unavailable" while showing only
+  temperature and power. They now rate the card from the DRM engine
+  counters the driver publishes in fdinfo: `drm-cycles-*` against
+  `drm-total-cycles-*` on xe, where the ratio lives on the GPU's own
+  clock and CPU sleep between samples cannot skew it, and `drm-engine-*`
+  on i915. Both are summed per engine class across every client, and the
+  busiest class reports for the card — engines run in parallel, so adding
+  the classes up would double-count. The engine pass now rides every tick
+  on Intel machines (it was panel-only); everywhere else nothing changes.
+  A card whose counters cannot be rated yet reports nothing rather than
+  zero, and a card whose driver really has no counters keeps the honest
+  "unavailable" note.
+- **Per-process GPU usage on Intel.** The GPU tab's process table listed
+  Intel clients at 0%, because xe publishes cycle counters under a key
+  the parser never read. Rows are now one per client engine with their
+  kind carried through, so cycle counters are rated against their own
+  clock and engine-time counters against the wall clock. Clients report
+  their memory once however many engines they run, and rows without a
+  memory figure (Intel has no VRAM region in fdinfo) show usage alone
+  instead of "0 B".
+
+### Fixed
+- **Bundle mounts no longer appear as filesystems.** An AppImage mounts
+  its own squashfs image (as `fuse.<appname>` under `$TMPDIR/.mount_*`) and
+  `df` happily lists it, so the DISK tab and the disk metric carried a
+  phantom ~118 MB "filesystem" for a running bundle — and one appeared in
+  the fixture corpus too. Mounts under a temp dir whose source is neither
+  a device nor a network share are now skipped. Real FUSE storage (sshfs,
+  rclone, ntfs-3g), a loop device, and anything mounted on purpose under
+  `/tmp` (the source is a device) keep their row.
+- **GPU names fell back to a generic label on every tick.** Since 1.1.0's
+  static/dynamic split, the parsed static context carried disk models,
+  links, PCI addresses and CPU topology — but not the lspci GPU names, so
+  each dynamic tick re-parsed an empty `GPUNAMES` section: an AMD dGPU
+  lost its name entirely and an Intel iGPU showed "Intel Integrated
+  Graphics". The context now carries the names, and the test suite pins
+  the merged names against a full sample.
+- `drm-engine-capacity-*` — an engine *count*, not engine time — was
+  summed into the per-process GPU time, adding a phantom nanosecond per
+  multi-engine IP (amdgpu VCN and friends).
+
 ## [1.2.3] — 2026-09-04
 
 ### Fixed

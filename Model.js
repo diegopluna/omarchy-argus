@@ -143,6 +143,7 @@ function parseSample(text, staticCtx) {
     disks: attachDiskModels(parseDf(sections.DF || []), diskModels, diskLinks),
     diskModels: diskModels,
     diskLinks: diskLinks,
+    gpuNames: gpuNames,
     io: parseDiskstats(sections.DISKSTATS || []),
     psi: parsePsi(sections.PSI || []),
     temps: parseTemps(sections.TEMP || []),
@@ -459,8 +460,21 @@ function parseNet(lines) {
   return result
 }
 
-// One row per underlying device, keyed by source; the shortest mount point
-// wins so btrfs subvolume mounts collapse into "/".
+// A filesystem mounted under a temp dir from something that isn't a device
+// (or a network share) is a bundle showing itself to the desktop, not
+// somewhere the user keeps data: an AppImage mounts its own squashfs image
+// as fuse.<appname> at $TMPDIR/.mount_*, and a manually mounted image does
+// the same. Real FUSE storage — sshfs, rclone, ntfs-3g — lives in a real
+// mount point, and a loop device is still a device, so both keep their row.
+function isBundleMount(entry) {
+  if (!/^\/(var\/)?tmp\//.test(entry.mount)) return false
+  if (/^\/dev\//.test(entry.source)) return false
+  if (entry.source.indexOf(":") !== -1) return false
+  return entry.source.indexOf("//") !== 0
+}
+
+// Parse df lines into one row per underlying device, keyed by source; the
+// shortest mount point wins so btrfs subvolume mounts collapse into "/".
 function parseDf(lines) {
   var bySource = {}
   var order = []
@@ -474,6 +488,7 @@ function parseDf(lines) {
       mount: parts.slice(3).join(" ")
     }
     if (entry.size <= 0) continue
+    if (isBundleMount(entry)) continue
     var existing = bySource[entry.source]
     if (!existing) {
       bySource[entry.source] = entry
@@ -760,8 +775,10 @@ function gpuMemTotal(gpu) {
   return gpu.apu ? (gpu.vramTotal || 0) + (gpu.gttTotal || 0) : (gpu.vramTotal || 0)
 }
 
-// GPUINTEL lines: card|temp|power (µW). i915/xe expose no busy counter,
-// so usage is NaN and the panel says so instead of showing zeros.
+// GPUINTEL lines: card|temp|power (µW). i915/xe expose no busy counter in
+// sysfs, so usage starts NaN with the noBusyCounter flag set; Service folds
+// the DRM engine counters in (applyEngineBusy) as soon as they can be
+// rated, and the panel says "unavailable" only until then.
 function parseIntelGpus(lines, names) {
   var result = []
   for (var i = 0; i < lines.length; i++) {
@@ -829,60 +846,148 @@ function parseGpuPdev(lines) {
   return map
 }
 
-// GPUPROC lines: pid|comm|pdev|client-id|engine_ns_total|vram_kib — one
-// DRM client per line, engine time cumulative since the client opened.
+// GPUPROC lines, one per DRM client engine:
+//   pid|comm|pdev|client|engine|kind|busy|total|vram_kib
+// `busy` (and, for cycles engines, `total`) are cumulative counters read
+// since the client opened: a rate needs two samples. kind "ns" counts
+// engine nanoseconds (amdgpu, i915, nouveau); kind "cycles" counts the
+// GPU's own clock (Intel xe), which CPU sleep between samples can't skew.
 function parseGpuProc(lines) {
   var result = []
   for (var i = 0; i < lines.length; i++) {
     var p = lines[i].split("|")
-    if (p.length < 6) continue
+    if (p.length < 9) continue
     result.push({
       pid: p[0],
       comm: p[1].trim(),
       pdev: p[2],
       client: p[3],
-      engineNs: Number(p[4]) || 0,
-      vramKib: Number(p[5]) || 0
+      engine: p[4].trim(),
+      kind: p[5].trim(),
+      busy: Number(p[6]) || 0,
+      total: p[7] === "" ? NaN : Number(p[7]),
+      vramKib: Number(p[8]) || 0
     })
   }
   return result
 }
 
-// Per-process GPU usage between two client snapshots: engine-time delta
-// over elapsed wall clock, aggregated per (pid, card). Engines can run in
-// parallel, so the sum is capped at 100. Sorted busiest first.
-function gpuProcRates(prev, cur, elapsedSec) {
-  var prevByKey = {}
-  if (prev) {
-    for (var i = 0; i < prev.length; i++) {
-      var e = prev[i]
-      prevByKey[e.pid + "|" + e.pdev + "|" + e.client] = e
-    }
+// One engine counter row across samples: same client, engine, and kind.
+function gpuEngineKey(row) {
+  return row.pid + "|" + row.pdev + "|" + row.client + "|" + row.engine + "|" + row.kind
+}
+
+function indexGpuEngines(rows) {
+  var byKey = {}
+  for (var i = 0; i < (rows || []).length; i++) byKey[gpuEngineKey(rows[i])] = rows[i]
+  return byKey
+}
+
+// One engine row's share of the window between two samples, or NaN when
+// the counters can't yield one — no previous sample (first tick), or a
+// client that restarted and reports a smaller counter. NaN contributes
+// nothing rather than a bogus spike.
+function gpuEngineShare(prev, cur, elapsedSec) {
+  if (!prev) return NaN
+  var delta = cur.busy - prev.busy
+  if (!(delta >= 0)) return NaN
+  if (cur.kind === "cycles") {
+    var span = cur.total - prev.total
+    if (span > 0) return 100 * delta / span
+    // The engine clock didn't advance: the GT was powered down and nothing
+    // ran — a real zero, not an unratable counter.
+    return delta === 0 ? 0 : NaN
   }
+  return elapsedSec > 0 ? 100 * delta / (elapsedSec * 1e9) : NaN
+}
+
+// Per-process GPU usage between two engine snapshots: each engine's share
+// of the window, aggregated per (pid, card). Engines run in parallel, so
+// the sum is capped at 100. Sorted busiest first.
+function gpuProcRates(prev, cur, elapsedSec) {
+  var prevByKey = indexGpuEngines(prev)
   var byProc = {}
   var order = []
+  // One client's memory is reported on every one of its engine rows; count
+  // it once.
+  var vramCounted = {}
   for (var j = 0; j < (cur || []).length; j++) {
     var c = cur[j]
-    var pct = 0
-    var p = prevByKey[c.pid + "|" + c.pdev + "|" + c.client]
-    if (p && elapsedSec > 0 && c.engineNs >= p.engineNs) {
-      pct = 100 * (c.engineNs - p.engineNs) / (elapsedSec * 1e9)
-    }
     var key = c.pid + "|" + c.pdev
-    if (!byProc[key]) {
-      byProc[key] = { pid: c.pid, comm: c.comm, pdev: c.pdev, pct: 0, vramKib: 0 }
+    var row = byProc[key]
+    if (!row) {
+      row = byProc[key] = { pid: c.pid, comm: c.comm, pdev: c.pdev, pct: 0, vramKib: 0 }
       order.push(key)
     }
-    byProc[key].pct += pct
-    byProc[key].vramKib += c.vramKib
+    var share = gpuEngineShare(prevByKey[gpuEngineKey(c)], c, elapsedSec)
+    if (isFinite(share)) row.pct += share
+    var vkey = key + "|" + c.client
+    if (!(vkey in vramCounted)) {
+      vramCounted[vkey] = 1
+      row.vramKib += c.vramKib
+    }
   }
   var result = []
   for (var k = 0; k < order.length; k++) {
-    var row = byProc[order[k]]
-    row.pct = Math.min(100, row.pct)
-    result.push(row)
+    var p = byProc[order[k]]
+    p.pct = Math.min(100, p.pct)
+    result.push(p)
   }
   result.sort(function(a, b) { return b.pct - a.pct || b.vramKib - a.vramKib })
+  return result
+}
+
+// Card-level usage from the same engine rows, for cards whose driver
+// exposes no busy counter of its own (Intel i915/xe): each engine class
+// carries the sum of its clients' shares, and the card reports the busiest
+// class — engines run in parallel, so adding the classes up would
+// double-count. Only cards the counters could actually rate appear in the
+// result: a card waiting on its second sample is unknown, not zero.
+function gpuEngineBusy(prev, cur, elapsedSec) {
+  var prevByKey = indexGpuEngines(prev)
+  var perCard = {}
+  for (var i = 0; i < (cur || []).length; i++) {
+    var c = cur[i]
+    var share = gpuEngineShare(prevByKey[gpuEngineKey(c)], c, elapsedSec)
+    if (!isFinite(share)) continue
+    var card = perCard[c.pdev] || (perCard[c.pdev] = {})
+    card[c.engine] = (card[c.engine] || 0) + share
+  }
+  var busy = {}
+  for (var pdev in perCard) {
+    var best = 0
+    for (var engine in perCard[pdev]) if (perCard[pdev][engine] > best) best = perCard[pdev][engine]
+    busy[pdev] = Math.min(100, best)
+  }
+  return busy
+}
+
+function gpuWithBusy(gpu, busy) {
+  var copy = {}
+  for (var k in gpu) if (k !== "noBusyCounter") copy[k] = gpu[k]
+  copy.busy = busy
+  return copy
+}
+
+// Fold engine-derived usage into the cards that have no busy counter of
+// their own. A card the counters can see loses its "usage unavailable"
+// flag and reports NaN until the second sample lands — the panel must not
+// blame the driver for a delta it hasn't measured yet. Cards nothing
+// reported keep the flag. `pdevByCard` is parseGpuPdev's map.
+function applyEngineBusy(gpus, prev, cur, elapsedSec, pdevByCard) {
+  var busy = gpuEngineBusy(prev, cur, elapsedSec)
+  var seen = {}
+  for (var i = 0; i < (cur || []).length; i++) if (cur[i].pdev) seen[cur[i].pdev] = true
+  var result = []
+  for (var g = 0; g < gpus.length; g++) {
+    var gpu = gpus[g]
+    var pdev = pdevByCard ? pdevByCard[gpu.card] : null
+    if (!gpu.noBusyCounter || !pdev || !seen[pdev]) {
+      result.push(gpu)
+      continue
+    }
+    result.push(gpuWithBusy(gpu, pdev in busy ? busy[pdev] : NaN))
+  }
   return result
 }
 
@@ -2102,6 +2207,8 @@ if (typeof module !== "undefined") {
     parseGpuPdev: parseGpuPdev,
     parseGpuProc: parseGpuProc,
     gpuProcRates: gpuProcRates,
+    gpuEngineBusy: gpuEngineBusy,
+    applyEngineBusy: applyEngineBusy,
     parseDriveHealth: parseDriveHealth,
     driveHealthBad: driveHealthBad,
     gpuMemUsed: gpuMemUsed,

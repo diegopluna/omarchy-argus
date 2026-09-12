@@ -7,6 +7,9 @@
 #   dynamic — everything that moves; sampled every tick. Flags:
 #               panel   — also emit the sections only the open panel
 #                         displays (top processes, per-process GPU clients)
+#             The DRM engine counters (###GPUPROC, ~15ms) ship with the
+#             panel and on every tick for GPUs whose usage is derived from
+#             them — Intel cards expose no sysfs busy counter.
 #               fast    — skip TEMP/FAN. Temperatures move on seconds, and
 #                         an NVMe temp read is an admin command the drive
 #                         can take ~75ms to answer (and it keeps the drive
@@ -27,6 +30,10 @@ panel=""
 fast=""
 procs=""
 netinfo=""
+# Set when a card's usage can only come from DRM engine counters (Intel has
+# no sysfs busy counter): the GPUPROC section then ships on every tick, not
+# just while the panel is open.
+gpu_engines=""
 for arg in "${@:2}"; do
   case "$arg" in
     panel) panel="panel" ;;
@@ -301,14 +308,16 @@ for c in /sys/class/drm/card[0-9] /sys/class/drm/card[0-9][0-9]; do
 done
 
 echo '###GPUINTEL'
-# Intel cards (i915/xe) expose no gpu_busy_percent; hwmon still provides
-# temperature and (on Arc) power, so show what exists.
+# Intel cards (i915/xe) expose no gpu_busy_percent; their usage comes from
+# the DRM engine counters instead (see GPUPROC), and hwmon provides
+# temperature and (on Arc) power where the driver registers it.
 for c in /sys/class/drm/card[0-9] /sys/class/drm/card[0-9][0-9]; do
   d="$c/device"
   [ -r "$d/vendor" ] || continue
   rline "$d/vendor" || continue
   [ "$REPLY" = "0x8086" ] || continue
   [ -r "$d/gpu_busy_percent" ] && continue
+  gpu_engines=1
   temp=""
   power=""
   for t in "$d"/hwmon/hwmon*/temp*_input; do
@@ -375,21 +384,38 @@ if [ "$panel" = "panel" ]; then
     echo "$i|$kind|$addr|$ssid"
   done
   fi
+fi
 
-  # Per-process GPU clients from DRM fdinfo (amdgpu, i915/xe, nouveau —
-  # any driver that implements the drm-usage-stats spec). One gawk pass
-  # over every readable fdinfo file (~15ms); unreadable processes simply
-  # don't appear in the glob, so only the user's own processes are seen.
-  # Engine time is cumulative ns — the panel derives usage from deltas.
-  # Lines: pid|comm|pdev|client-id|engine_ns_total|vram_kib
-  # gawk-only (BEGINFILE/ENDFILE), which Omarchy's Arch base guarantees.
+# DRM client engine counters from fdinfo (any driver implementing the
+# drm-usage-stats spec: amdgpu, i915, xe, nouveau). One gawk pass over
+# every readable fdinfo file (~15ms); unreadable processes simply don't
+# appear in the glob, so only the user's own processes are seen. Emitted
+# while the panel shows its per-process table, and every tick on machines
+# whose GPU usage needs the counters (Intel has no sysfs busy counter).
+# One row per client engine, counters cumulative since the client opened:
+#   pid|comm|pdev|client|engine|kind|busy|total|vram_kib
+# kind=ns      drm-engine-* — busy is nanoseconds of engine time; usage
+#              divides by the elapsed wall clock.
+# kind=cycles  drm-cycles-*/drm-total-cycles-* (Intel xe) — busy and total
+#              are the GPU's own cycle counters, so usage divides by the
+#              delta of that clock and CPU sleep can't skew it.
+# drm-engine-capacity-* is an engine count, not time: skipped.
+# gawk-only (BEGINFILE/ENDFILE), which Omarchy's Arch base guarantees.
+if [ "$panel" = "panel" ] || [ "$gpu_engines" = "1" ]; then
   echo '###GPUPROC'
   gawk '
-    BEGINFILE { if (ERRNO) { nextfile }; drv=""; client=""; pdev=""; eng=0; vram=0 }
+    BEGINFILE {
+      if (ERRNO) { nextfile }
+      drv=""; client=""; pdev=""; vram=0
+      delete nseng; delete cyc; delete tot
+    }
     /^drm-driver:/ { drv=$2 }
     /^drm-pdev:/ { pdev=$2 }
     /^drm-client-id:/ { client=$2 }
-    /^drm-engine-/ { eng += $2 }
+    /^drm-engine-capacity-/ { next }
+    /^drm-engine-/ { eng=$1; sub(/^drm-engine-/, "", eng); sub(/:$/, "", eng); nseng[eng]=$2 }
+    /^drm-cycles-/ { eng=$1; sub(/^drm-cycles-/, "", eng); sub(/:$/, "", eng); cyc[eng]=$2 }
+    /^drm-total-cycles-/ { eng=$1; sub(/^drm-total-cycles-/, "", eng); sub(/:$/, "", eng); tot[eng]=$2 }
     /^drm-memory-vram:/ { vram = $2 }
     ENDFILE {
       if (drv != "" && client != "") {
@@ -399,7 +425,11 @@ if [ "$panel" = "panel" ]; then
           seen[key] = 1
           comm = ""; cf = "/proc/" pid "/comm"
           if ((getline comm < cf) > 0) close(cf)
-          print pid "|" comm "|" pdev "|" client "|" eng "|" vram
+          for (eng in nseng)
+            print pid "|" comm "|" pdev "|" client "|" eng "|ns|" nseng[eng] "||" vram
+          for (eng in cyc)
+            print pid "|" comm "|" pdev "|" client "|" eng "|cycles|" cyc[eng] \
+                  "|" (eng in tot ? tot[eng] : "") "|" vram
         }
       }
     }

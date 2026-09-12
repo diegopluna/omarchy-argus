@@ -1,0 +1,133 @@
+###HOST
+fixture-host
+###CPUNAME
+Intel(R) Core(TM) Ultra 5 228V
+###KERNEL
+7.2.3-arch1-3
+###CHASSIS
+35
+###DISKNAMES
+zram0   
+nvme0n1 UMIS RPEYJ512MML1QWQ
+###DISKLINKS
+zram0 
+nvme0n1 
+nvme0n1p1 nvme0n1
+nvme0n1p2 nvme0n1
+nvme0n1p3 nvme0n1
+nvme0n1p4 nvme0n1
+nvme0n1p5 nvme0n1
+nvme0n1p6 nvme0n1
+omarchy_root nvme0n1p6
+###GPUNAMES
+0|Intel Corporation Core Ultra 200V Series Processors Arc Graphics 130V/140V GPU (rev 04)
+###GPUPDEV
+0|0000:00:02.0
+###CPUTOPO
+0|0|0-3|4500000
+1|4|0-3|4500000
+2|8|0-3|4500000
+3|12|0-3|4500000
+4|32||3500000
+5|33||3500000
+6|34||3500000
+7|35||3500000
+###STAT
+cpu  310102 323 170486 12118442 6142 55247 27130 0 0 0
+cpu0 56083 190 23432 1495039 743 7405 3139 0 0 0
+cpu1 38526 24 18921 1516426 928 7946 2827 0 0 0
+cpu2 35501 27 19255 1518194 838 8115 2858 0 0 0
+cpu3 33137 36 37370 1505260 676 9113 9548 0 0 0
+cpu4 38444 13 18109 1520299 757 4186 2012 0 0 0
+cpu5 38414 12 17941 1519967 909 4160 1929 0 0 0
+cpu6 36334 12 18555 1516846 709 10738 3127 0 0 0
+cpu7 33660 6 16900 1526407 578 3579 1688 0 0 0
+###MEM
+MemTotal:       32487468 kB
+MemFree:        20718328 kB
+MemAvailable:   25616908 kB
+Buffers:            4572 kB
+Cached:          6385848 kB
+SwapTotal:      32487420 kB
+SwapFree:       32487420 kB
+Dirty:               444 kB
+Shmem:            231408 kB
+SReclaimable:     455856 kB
+###SWAPS
+/dev/zram0                              partition	32487420	0		100
+###LOAD
+3.08 1.77 1.24 1/847 666973
+15711.40 121184.43
+2094
+###CPUFREQ
+0|3878383
+1|400591
+2|400000
+3|1338619
+4|2448366
+5|3062557
+6|3129498
+7|2096014
+###POWER
+rapl-restricted|package-0
+rapl-restricted|core
+rapl-restricted|uncore
+rapl-restricted|dram
+###NET
+    lo: 1199707692  927683    0    0    0     0          0         0 1199707692  927683    0    0    0     0       0          0
+enp127s0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+enp129s0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+wlp128s0: 1830503236 1696031    0 7343    0     0          0         0 146214156  499483    0   15    0     0       0          0
+###DF
+/dev/mapper/omarchy_root 212057718784 8128806912 /
+/dev/mapper/omarchy_root 212057718784 8128806912 /var/cache/pacman/pkg
+/dev/mapper/omarchy_root 212057718784 8128806912 /home
+/dev/mapper/omarchy_root 212057718784 8128806912 /var/log
+/dev/nvme0n1p5             2143281152  162926592 /boot
+###PSI
+cpu some avg10=0.00 avg60=0.00 avg300=0.00 total=55360391
+cpu full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+memory some avg10=0.00 avg60=0.00 avg300=0.00 total=22142
+memory full avg10=0.00 avg60=0.00 avg300=0.00 total=7982
+io some avg10=0.00 avg60=0.00 avg300=0.00 total=10786952
+io full avg10=0.00 avg60=0.00 avg300=0.00 total=10000957
+###NETPHYS
+enp127s0
+enp129s0
+wlp128s0
+###DISKSTATS
+ 259       0 nvme0n1 36257 17778 4700532 12881 178034 104975 10450948 200063 0 50815 214633 0 0 0 0 9978 1689
+ 259       1 nvme0n1p1 392 617 4025 260 0 0 0 0 0 32 260 0 0 0 0 0 0
+ 259       2 nvme0n1p2 34 0 2160 7 0 0 0 0 0 5 7 0 0 0 0 0 0
+ 259       3 nvme0n1p3 400 0 32952 52 267 3 131176 153 0 52 205 0 0 0 0 0 0
+ 259       4 nvme0n1p4 40 0 3056 9 0 0 0 0 0 7 9 0 0 0 0 0 0
+ 259       5 nvme0n1p5 791 3674 115653 250 792 694 287756 1770 0 181 2020 0 0 0 0 0 0
+ 259       6 nvme0n1p6 34526 13487 4540078 12295 176971 104278 10032016 198138 0 50267 210433 0 0 0 0 0 0
+ 253       0 dm-0 47964 0 4539010 23639 281245 0 10032016 898278 0 55840 921917 0 0 0 0 0 0
+ 252       0 zram0 75 0 2848 0 1 0 8 0 0 0 0 0 0 0 0 0 0
+###TEMP
+acpitz||-273300|
+acpitz||27800|
+nvme|Composite|29850|UMIS RPEYJ512MML1QWQ
+nvme|Sensor 1|29850|UMIS RPEYJ512MML1QWQ
+nvme|Sensor 2|35850|UMIS RPEYJ512MML1QWQ
+r8169_0_7f00:00||42000|
+r8169_0_8100:00||43500|
+coretemp|Core 8|45000|
+coretemp|Core 12|45000|
+coretemp|Package id 0|48000|
+coretemp|Core 0|46000|
+coretemp|Core 32|46000|
+coretemp|Core 33|46000|
+coretemp|Core 34|46000|
+coretemp|Core 35|46000|
+coretemp|Core 4|45000|
+###FAN
+###GPU
+###GPUINTEL
+0||
+###NVIDIA
+###PS
+###NETINFO
+###GPUPROC
+###BAT
