@@ -324,6 +324,19 @@ for c in /sys/class/drm/card[0-9] /sys/class/drm/card[0-9][0-9]; do
     rline "$t" || continue
     [ -n "$REPLY" ] && { temp=$REPLY; break; }
   done
+  # i915/xe expose no GPU temp sensor (no hwmon on the card), so fall back
+  # to the coretemp package (die) temperature — the iGPU sits on the same
+  # die, making the package reading the honest closest proxy for GPU temp.
+  if [ -z "$temp" ]; then
+    for h in /sys/class/hwmon/hwmon*; do
+      [ "$(cat "$h/name" 2>/dev/null)" = "coretemp" ] || continue
+      for t in "$h"/temp*_input; do
+        [ -r "$t" ] || continue
+        l=""; [ -r "${t%_input}_label" ] && l=$(cat "${t%_input}_label")
+        if [ "$l" = "Package id 0" ]; then rline "$t" && temp=$REPLY; fi
+      done
+    done
+  fi
   for p in "$d"/hwmon/hwmon*/power1_input "$d"/hwmon/hwmon*/power1_average; do
     [ -r "$p" ] || continue
     rline "$p" && power=$REPLY
