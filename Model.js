@@ -143,6 +143,7 @@ function parseSample(text, staticCtx) {
     disks: attachDiskModels(parseDf(sections.DF || []), diskModels, diskLinks),
     diskModels: diskModels,
     diskLinks: diskLinks,
+    gpuNames: gpuNames,
     io: parseDiskstats(sections.DISKSTATS || []),
     psi: parsePsi(sections.PSI || []),
     temps: parseTemps(sections.TEMP || []),

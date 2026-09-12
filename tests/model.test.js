@@ -55,6 +55,10 @@ assert.strictEqual(ctxMerged.host, sample.host, "host from context")
 assert.strictEqual(ctxMerged.cpuName, sample.cpuName)
 assert.strictEqual(ctxMerged.cpuTopo, staticCtx.cpuTopo, "topology is the same object, not a re-parse")
 assert.ok(Object.keys(ctxMerged.diskModels).length > 0, "disk models from context")
+// GPU names ride the same context; dropping them left every dynamic tick
+// with the parser's fallback ("Intel Integrated Graphics", or no name at
+// all for an AMD dGPU).
+assert.deepStrictEqual(ctxMerged.gpus.map(g => g.name), sample.gpus.map(g => g.name), "gpu names from context")
 if (!CI) assert.ok(ctxMerged.disks.some(d => d.model !== ""), "dynamic disks still get their models")
 
 // The fast tick skips the sensor bus entirely; the shell replays the

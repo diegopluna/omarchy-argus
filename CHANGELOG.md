@@ -31,6 +31,13 @@ follow [Semantic Versioning](https://semver.org/).
   instead of "0 B".
 
 ### Fixed
+- **GPU names fell back to a generic label on every tick.** Since 1.1.0's
+  static/dynamic split, the parsed static context carried disk models,
+  links, PCI addresses and CPU topology — but not the lspci GPU names, so
+  each dynamic tick re-parsed an empty `GPUNAMES` section: an AMD dGPU
+  lost its name entirely and an Intel iGPU showed "Intel Integrated
+  Graphics". The context now carries the names, and the test suite pins
+  the merged names against a full sample.
 - `drm-engine-capacity-*` — an engine *count*, not engine time — was
   summed into the per-process GPU time, adding a phantom nanosecond per
   multi-engine IP (amdgpu VCN and friends).
