@@ -106,14 +106,15 @@ Singleton {
   property var battery: null
   property bool ready: false
 
-  // Per-process GPU usage (panel-only samples, like the process lists).
-  // Engine counters are cumulative, so rates use the wall clock between
-  // the two GPU snapshots — panel-closed gaps would otherwise inflate the
-  // first reopened tick.
+  // Per-process GPU usage from the DRM engine rows: those ship every tick
+  // on machines whose GPU usage needs them (Intel has no sysfs busy
+  // counter) and with the panel everywhere else. Counters are cumulative,
+  // so rates use the wall clock between the two engine snapshots — a
+  // panel-closed gap would otherwise inflate the first reopened tick.
   property var gpuPdev: ({})
   property var gpuProcs: []
-  property var _prevGpuProc: null
-  property double _prevGpuProcAt: 0
+  property var _prevGpuRows: null
+  property double _prevGpuRowsAt: 0
 
   // Drive SMART health via udisks2; sampled at startup and panel open.
   property var driveHealth: []
@@ -265,11 +266,12 @@ Singleton {
     if (parsed.psAll.length > 0) psAll = parsed.psAll
     if (Object.keys(parsed.netInfo).length > 0) netInfo = parsed.netInfo
     if (gpuPdev !== parsed.gpuPdev) gpuPdev = parsed.gpuPdev
+    var gpuPrevRows = _prevGpuRows
+    var gpuElapsed = _prevGpuRowsAt > 0 ? (now - _prevGpuRowsAt) / 1000 : 0
     if (parsed.gpuProcs.length > 0) {
-      var gpuElapsed = _prevGpuProcAt > 0 ? (now - _prevGpuProcAt) / 1000 : 0
-      gpuProcs = Model.gpuProcRates(_prevGpuProc, parsed.gpuProcs, gpuElapsed)
-      _prevGpuProc = parsed.gpuProcs
-      _prevGpuProcAt = now
+      gpuProcs = Model.gpuProcRates(gpuPrevRows, parsed.gpuProcs, gpuElapsed)
+      _prevGpuRows = parsed.gpuProcs
+      _prevGpuRowsAt = now
     }
     batteries = parsed.batteries
     battery = Model.batterySummary(parsed.batteries)
@@ -284,6 +286,11 @@ Singleton {
         if (String(allGpus[g].card).indexOf("nv") === 0) nvidia.push(allGpus[g])
       }
       _lastNvidia = nvidia
+    }
+    // Intel cards get their usage from the engine counters, since their
+    // driver exposes none in sysfs.
+    if (parsed.gpuProcs.length > 0) {
+      allGpus = Model.applyEngineBusy(allGpus, gpuPrevRows, parsed.gpuProcs, gpuElapsed, parsed.gpuPdev)
     }
     gpus = allGpus
     primaryGpu = Model.primaryGpu(allGpus)

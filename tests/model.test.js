@@ -851,38 +851,80 @@ if (!CI) {
   assert.ok(livePower.domains.length > 0 || livePower.restricted, "live RAPL present or honestly restricted")
 }
 
-// Per-process GPU: fdinfo clients dedupe, aggregate per (pid, card), and
-// derive usage from cumulative engine-time deltas.
+// Per-process GPU: fdinfo rows are one per client engine, counters
+// cumulative since the client opened. "ns" counts engine nanoseconds
+// (amdgpu, i915, nouveau); "cycles" counts the GPU's own clock (Intel xe)
+// together with that clock's total, so the rate never trusts the shell's
+// wall clock.
 const gpuProcSample = Model.parseSample(
   "###GPUPDEV\n0|0000:0f:00.0\n1|0000:03:00.0\n###GPUPROC\n" +
-  "100|zen-bin|0000:03:00.0|7|1000000000|1024\n" +
-  "100|zen-bin|0000:03:00.0|9|2000000000|2048\n" +
-  "200|Hyprland|0000:0f:00.0|3|500000000|512")
+  "100|zen-bin|0000:03:00.0|7|render|ns|1000000000||1024\n" +
+  "100|zen-bin|0000:03:00.0|9|render|ns|2000000000||2048\n" +
+  "200|Hyprland|0000:0f:00.0|3|rcs|cycles|500000000|9000000000|512\n" +
+  "200|Hyprland|0000:0f:00.0|3|bcs|cycles|1000000|9000000000|512")
 assert.deepStrictEqual(gpuProcSample.gpuPdev, { "0": "0000:0f:00.0", "1": "0000:03:00.0" })
-assert.strictEqual(gpuProcSample.gpuProcs.length, 3)
+assert.strictEqual(gpuProcSample.gpuProcs.length, 4)
+assert.strictEqual(gpuProcSample.gpuProcs[2].engine, "rcs")
+assert.strictEqual(gpuProcSample.gpuProcs[2].kind, "cycles")
+assert.strictEqual(gpuProcSample.gpuProcs[2].total, 9000000000)
+assert.ok(Number.isNaN(gpuProcSample.gpuProcs[0].total), "ns rows carry no engine clock")
 const gpuPrev = gpuProcSample.gpuProcs
-const gpuCur = [
-  { pid: "100", comm: "zen-bin", pdev: "0000:03:00.0", client: "7", engineNs: 1000000000 + 6e8, vramKib: 1024 },
-  { pid: "100", comm: "zen-bin", pdev: "0000:03:00.0", client: "9", engineNs: 2000000000 + 4e8, vramKib: 2048 },
-  { pid: "200", comm: "Hyprland", pdev: "0000:0f:00.0", client: "3", engineNs: 500000000 + 1e8, vramKib: 512 }
-]
+const gpuCur = Model.parseGpuProc([
+  "100|zen-bin|0000:03:00.0|7|render|ns|1600000000||1024",
+  "100|zen-bin|0000:03:00.0|9|render|ns|2400000000||2048",
+  "200|Hyprland|0000:0f:00.0|3|rcs|cycles|600000000|10000000000|512",
+  "200|Hyprland|0000:0f:00.0|3|bcs|cycles|51000000|10000000000|512"
+])
 const gpuRates = Model.gpuProcRates(gpuPrev, gpuCur, 2)
 assert.strictEqual(gpuRates.length, 2, "clients aggregate per pid+card")
 assert.strictEqual(gpuRates[0].comm, "zen-bin")
 assert.ok(Math.abs(gpuRates[0].pct - 50) < 0.01, "0.6s + 0.4s over 2s = 50%")
 assert.strictEqual(gpuRates[0].vramKib, 3072)
-assert.ok(Math.abs(gpuRates[1].pct - 5) < 0.01)
+// Cycle counters are rated against the engine's own clock, engines add up
+// per process, and a client running several engines reports its memory once.
+assert.ok(Math.abs(gpuRates[1].pct - 15) < 0.01, "10% + 5% of the engine clock")
+assert.strictEqual(gpuRates[1].vramKib, 512, "memory counted once per client")
 assert.strictEqual(Model.gpuProcRates(null, gpuCur, 2)[0].pct, 0, "no prev → no rate, vram still present")
-// A restarted client (counter went backwards) contributes no rate.
-const restarted = [{ pid: "100", comm: "x", pdev: "a", client: "7", engineNs: 10, vramKib: 0 }]
+// A restarted client (either counter went backwards) contributes no rate.
+const restarted = Model.parseGpuProc([
+  "100|x|0000:03:00.0|7|vcn|ns|10||0",
+  "200|y|0000:0f:00.0|3|rcs|cycles|1|9000000000|0"
+])
 assert.strictEqual(Model.gpuProcRates(gpuPrev, restarted, 2)[0].pct, 0)
+assert.strictEqual(Model.gpuProcRates(gpuPrev, restarted, 2)[0].comm, "x")
 // Parallel engines can sum past 100; the cap keeps the display honest.
 const hot = Model.gpuProcRates(
-  [{ pid: "1", comm: "x", pdev: "a", client: "1", engineNs: 0, vramKib: 0 },
-   { pid: "1", comm: "x", pdev: "a", client: "2", engineNs: 0, vramKib: 0 }],
-  [{ pid: "1", comm: "x", pdev: "a", client: "1", engineNs: 2e9, vramKib: 0 },
-   { pid: "1", comm: "x", pdev: "a", client: "2", engineNs: 2e9, vramKib: 0 }], 2)
+  Model.parseGpuProc(["1|x|a|1|render|ns|0||0", "1|x|a|2|vcn|ns|0||0"]),
+  Model.parseGpuProc(["1|x|a|1|render|ns|2000000000||0", "1|x|a|2|vcn|ns|2000000000||0"]), 2)
 assert.strictEqual(hot[0].pct, 100)
+
+// Card-level usage from the same rows: the busiest engine class carries
+// the card (classes run in parallel), and a card the counters can't rate
+// is absent rather than zero.
+const gpuBusy = Model.gpuEngineBusy(gpuPrev, gpuCur, 2)
+assert.ok(Math.abs(gpuBusy["0000:03:00.0"] - 50) < 0.01)
+assert.ok(Math.abs(gpuBusy["0000:0f:00.0"] - 10) < 0.01, "idle engine class doesn't drag the card down")
+assert.deepStrictEqual(Model.gpuEngineBusy(null, gpuCur, 2), {}, "the first tick rates nothing")
+// A stalled engine clock means the GT was powered down and nothing ran:
+// zero, not unknown.
+const powerGated = Model.parseGpuProc(["200|x|0000:0f:00.0|3|rcs|cycles|500000000|9000000000|512"])
+assert.deepStrictEqual(Model.gpuEngineBusy(gpuPrev, powerGated, 2), { "0000:0f:00.0": 0 })
+
+// Intel cards adopt that usage — they have no sysfs busy counter. A card
+// with no rows keeps its flag; one seen but not yet ratable loses it and
+// reports NaN, so the panel never blames the driver for a delta it hasn't
+// measured yet.
+const intelGpus = Model.parseIntelGpus(["0||", "7||"], { "0": "Intel Corporation [Arc 130V]", "7": "Intel Corporation [UHD Graphics]" })
+const pdevByCard = { "0": "0000:0f:00.0" }
+const rated = Model.applyEngineBusy(intelGpus, gpuPrev, gpuCur, 2, pdevByCard)
+assert.strictEqual(rated[0].noBusyCounter, undefined, "engine counters clear the flag")
+assert.ok(Math.abs(rated[0].busy - 10) < 0.01)
+assert.strictEqual(rated[1].noBusyCounter, true, "a card with no rows keeps its flag")
+assert.ok(Number.isNaN(rated[1].busy))
+const firstTick = Model.applyEngineBusy(intelGpus, null, gpuCur, 2, pdevByCard)
+assert.strictEqual(firstTick[0].noBusyCounter, undefined)
+assert.ok(Number.isNaN(firstTick[0].busy), "seen but not yet ratable → unknown, not zero")
+assert.strictEqual(Model.metricValue("gpu", { gpu: rated[0] }), "10%", "the bar renders Intel usage")
 
 // Drive health from udisks2: NVMe with attributes, SATA with the failing
 // flag, and the bad-drive predicate.
@@ -913,6 +955,22 @@ if (!CI) assert.ok(liveHealth.driveHealth.length > 0, "live drives found via udi
 const livePanel = Model.parseSample(execSync("bash " + script + " dynamic panel").toString())
 assert.ok(Array.isArray(livePanel.gpuProcs))
 if (!CI) assert.ok(livePanel.gpuProcs.length > 0, "live DRM clients found")
+
+// On a machine whose GPU has no sysfs busy counter (Intel), two samples a
+// second apart must turn its engine counters into a card-level percentage.
+if (!CI) {
+  const liveAll = Model.parseSample(execSync("bash " + script).toString())
+  const countersOnly = liveAll.gpus.filter(g => g.noBusyCounter === true)
+  if (countersOnly.length > 0) {
+    execSync("sleep 1")
+    const next = Model.parseSample(execSync("bash " + script).toString())
+    const merged = Model.applyEngineBusy(liveAll.gpus, liveAll.gpuProcs, next.gpuProcs, 1, next.gpuPdev)
+    const rated = merged.filter(g => g.noBusyCounter === undefined && g.card === countersOnly[0].card)[0]
+    assert.strictEqual(rated.noBusyCounter, undefined, "live Intel card adopts the engine counters")
+    assert.ok(isFinite(rated.busy) && rated.busy >= 0 && rated.busy <= 100,
+      "live Intel usage rated from engine counters: " + rated.busy)
+  }
+}
 
 // ---- Fixture corpus -------------------------------------------------------
 // Every file in tests/fixtures/ is a scrubbed `sample.sh` capture from a

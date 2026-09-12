@@ -39,7 +39,7 @@ order in the panel's **SETUP** tab; the choice persists to
 - **HOME** — the overview: a configurable grid of glance tiles (CPU, memory, GPU, network, disk I/O, disk, battery), each with its live value, a subline, and a sparkline or meter; click a tile to open its tab, pick tiles in the SETUP tab
 - **CPU** — processor model, overall usage with sparkline history, a core grid laid out like the silicon (SMT siblings fused, cores grouped by CCD with live clocks, efficiency cores drawn shorter on hybrid chips), frequency, temperature with its own chart and session peak, load, uptime, stall pressure, kernel version
 - **MEM** — RAM usage with sparkline history, an in use / cache / free split bar (free(1)'s accounting), dirty pages, swap with its backing named (zram-aware), PSI memory pressure
-- **GPU** — every GPU (AMD via amdgpu sysfs, NVIDIA via nvidia-smi, Intel via hwmon): name, usage with sparkline history, VRAM, temperature with session peak, power draw, and each card's busiest processes with GPU usage and VRAM (via DRM fdinfo; not available for the proprietary NVIDIA driver). An AMD iGPU's memory meter covers its real pool — the BIOS carve-out plus GTT (shared system RAM) — not just the misleading carve-out, with the split shown underneath
+- **GPU** — every GPU (AMD via amdgpu sysfs, NVIDIA via nvidia-smi, Intel via DRM engine counters): name, usage with sparkline history, VRAM, temperature with session peak, power draw, and each card's busiest processes with GPU usage and VRAM (via DRM fdinfo; not available for the proprietary NVIDIA driver). An AMD iGPU's memory meter covers its real pool — the BIOS carve-out plus GTT (shared system RAM) — not just the misleading carve-out, with the split shown underneath. Intel cards have no busy counter in sysfs, so their usage is rated from the engine counters the driver publishes in fdinfo
 - **DISK** — every real filesystem with its physical disk model (LUKS/LVM resolved via lsblk), live read/write rates per physical disk, PSI I/O pressure, and per-drive SMART health (wear, power-on time, warnings) via udisks2 — a failing or worn-out drive turns urgent, and notifies once per session when its alert is enabled
 - **NET** — total and per-interface download/upload rates with sparklines, each interface labeled with its kind (Wi-Fi/Ethernet), SSID, and IPv4 address; virtual interfaces (VPN tunnels, bridges, veth) are listed but kept out of the totals so VPN traffic isn't counted twice
 - **PROC** — the full process table: filter live (`/`) by name, user, or pid; sort by any column; walk rows with j/k; expand a row for the complete command line, owner, and thread count; Terminate or Kill −9 after confirmation
@@ -308,12 +308,18 @@ are filtered out via the sysfs `scope` attribute), and
 `/sys/class/drm/card*/device` for AMD GPU busy/VRAM/GTT (amdgpu; a card
 without `mem_busy_percent` — which the kernel exposes only for dedicated
 VRAM — is an APU, so its memory pool is carve-out + GTT),
-`/proc/*/fdinfo` DRM usage stats for per-process GPU usage, and udisks2
+`/proc/*/fdinfo` DRM usage stats for per-process GPU usage and for Intel
+card-level usage, and udisks2
 over D-Bus for drive SMART health. NVIDIA GPUs
 are read through `nvidia-smi --query-gpu=... --format=csv,noheader,nounits`
-and Intel GPUs (i915/xe) through their hwmon temperature/power — Intel
-exposes no unprivileged busy counter, so usage is honestly marked
-unavailable rather than shown as zero. nvidia-smi is
+and Intel GPUs (i915/xe) through their hwmon temperature/power — where the
+driver registers them at all — plus those DRM engine counters, since Intel
+exposes no unprivileged busy counter in sysfs: `drm-cycles-*` against
+`drm-total-cycles-*` on xe (rated on the GPU's own clock, so CPU sleep
+between samples cannot skew it) and `drm-engine-*` on i915, summed per
+engine class across every client, with the busiest class reporting for the
+card. A card whose counters can't be rated yet says so rather than showing
+zero. nvidia-smi is
 invoked only when `/proc/driver/nvidia/version` shows the driver is loaded,
 guarded by a 3-second timeout; `[N/A]` fields (e.g. utilization on some
 GPUs) degrade gracefully. While every NVIDIA card is runtime-suspended
@@ -332,7 +338,10 @@ sampled only while a panel is open, so `lsblk`/`lspci`/`ps` stay off the
 always-on hot path. `df` and `lsblk` run under `timeout` so a stale
 network mount degrades one tick instead of freezing the widget. GPU power
 draw comes from amdgpu's hwmon `power1_average` and nvidia-smi's
-`power.draw`. Usage deltas are computed in QML.
+`power.draw`. Usage deltas are computed in QML. The DRM engine pass
+behind per-process GPU usage (~15ms over a few thousand fdinfo files)
+rides every tick on Intel machines, because their card-level usage comes
+from it; everywhere else it stays panel-only.
 
 The SETUP tab shows what sampling actually costs (wall clock per tick,
 measured, not promised). The shell never blocks on it, and the sampler's
