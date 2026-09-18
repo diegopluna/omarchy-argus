@@ -12,7 +12,7 @@ import "Model.js" as Model
 // thresholds.
 //
 // Bar button — left click: panel · right click: btop · middle click: refresh
-// Panel — h/l or ←/→: switch tab · j/k or ↑/↓: scroll · r: refresh · Esc: close
+// Panel — h/l or ←/→: switch tab · j/k or ↑/↓: scroll · r: refresh · [/]: machine · Esc: close
 Panel {
   id: root
   moduleName: "io.github.diegopluna.argus"
@@ -35,7 +35,8 @@ Panel {
     return Model.displayTemp(celsius) + Model.tempSuffix()
   }
   readonly property var thresholds: Model.thresholdsFrom(settings)
-  readonly property var barSegs: Service.ready ? Model.barSegments(shownKeys, Service.barData, thresholds) : []
+  // The bar always shows this machine; the panel follows the selected host.
+  readonly property var barSegs: Service.localReady ? Model.barSegments(shownKeys, Service.localBarData, thresholds) : []
   // The panel's always-visible vitals, independent of the bar selection.
   readonly property var vitalSegs: Service.ready ? Model.barSegments(Model.VITAL_KEYS, Service.barData, thresholds) : []
   // The placeholder icon also covers the not-yet-sampled window right after
@@ -71,13 +72,14 @@ Panel {
 
   readonly property string segmentGap: "  "
 
-  readonly property var verticalLines: Service.ready
-    ? Model.barLines(shownKeys, Service.barData, thresholds)
+  readonly property var verticalLines: Service.localReady
+    ? Model.barLines(shownKeys, Service.localBarData, thresholds)
     : [{ text: Model.PLACEHOLDER_ICON, urgent: false }]
 
   // Row models must not rebuild their delegates every tick, so they hang
   // off these stable booleans instead of the per-tick Service arrays —
   // a bool only signals when it actually flips.
+  readonly property bool hostWaiting: Service.viewRemote && !Service.ready
   readonly property bool hasGpu: Service.gpus.length > 0
   readonly property bool hasBattery: Service.batteries.length > 0
   readonly property bool hasDriveTemp: Service.driveTemp !== null
@@ -87,7 +89,8 @@ Panel {
     var t = ["HOME", "CPU", "MEM", "GPU", "DISK", "NET", "PROC", "TEMP"]
     if (hasBattery) t.push("BAT")
     t.push("PWR")
-    t.push("GAME")
+    // The in-game HUD configures this machine's MangoHud only.
+    if (!Service.viewRemote) t.push("GAME")
     t.push("ALERTS")
     t.push("SETUP")
     return t
@@ -95,6 +98,22 @@ Panel {
 
   // ---- GAME tab (MangoHud) ----------------------------------------------
   property bool mangoFieldFocused: false
+
+  // ---- SETUP tab: SSH devices -------------------------------------------
+  property bool deviceFieldFocused: false
+  property string deviceError: ""
+
+  function addDevice(ssh, name) {
+    var result = Model.addDevice(setting("devices", []), ssh, name)
+    deviceError = result.error
+    if (result.error !== "") return false
+    persistPluginSetting("devices", result.devices)
+    return true
+  }
+
+  function removeDevice(ssh) {
+    persistPluginSetting("devices", Model.removeDevice(setting("devices", []), ssh))
+  }
 
   function setMango(key, value) {
     var m = JSON.parse(JSON.stringify(Service.mango))
@@ -394,6 +413,11 @@ Panel {
       root.refreshNow()
       return
     }
+    // [ / ]: previous / next machine, when SSH devices are configured.
+    if (text === "[" || text === "]") {
+      Service.selectHost(Service.hostIndex + (text === "]" ? 1 : -1))
+      return
+    }
     if (text === "/" && tab === "PROC") {
       if (procFilterField) procFilterField.forceActiveFocus()
       return
@@ -460,7 +484,7 @@ Panel {
       // Reopen where the user left off; an urgent metric still wins.
       if (tabs.indexOf(Service.lastTab) !== -1) tab = Service.lastTab
       // Land on the tab that explains the problem, if there is one.
-      for (var i = 0; i < barSegs.length; i++) {
+      for (var i = 0; i < barSegs.length && !Service.viewRemote; i++) {
         if (!barSegs[i].urgent) continue
         var target = tabForKey(barSegs[i].key)
         if (target !== "" && tabs.indexOf(target) !== -1) { tab = target; break }
@@ -495,33 +519,59 @@ Panel {
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
     function refresh(): string { Service.refresh(); return "ok" }
+    // Every machine's headline numbers, for scripts and quick comparison.
+    function hosts(): string {
+      return JSON.stringify(Service.hosts.map(function(h) {
+        return { id: h.hostId, label: h.label, ssh: h.sshTarget, host: h.host, viewing: h === Service.view,
+          ready: h.ready, reachable: h.reachable, error: h.lastError,
+          cpuName: h.cpuName, cpuPct: h.cpuPct, cpuTempC: isFinite(h.cpuTempC) ? h.cpuTempC : null,
+          memPct: h.memPct, memUsedBytes: h.memUsed, memTotalBytes: h.memTotal,
+          uptimeSec: h.uptimeSec, load1: h.load1,
+          disks: h.disks.map(function(d) { return { mount: d.mount, used: d.used, size: d.size } }) }
+      }))
+    }
+    // Add or remove an SSH device — the SETUP tab's form, for scripts and
+    // dotfiles. Returns "ok" or why the device was refused.
+    function addDevice(ssh: string, name: string): string {
+      return root.addDevice(ssh, name) ? "ok" : root.deviceError
+    }
+    function removeDevice(ssh: string): string {
+      root.removeDevice(ssh)
+      return "ok"
+    }
+    // Which machine the panel shows: "local", "next", "prev", or a
+    // device's ssh destination or name.
+    function host(name: string): string {
+      if (!Service.selectHostNamed(name)) return "unknown host: " + name
+      return Service.view.hostId
+    }
     function metrics(): string {
       return JSON.stringify({
-        host: Service.host,
-        uptimeSec: Service.uptimeSec,
-        load: [Service.load1, Service.load5, Service.load15],
-        cpuPct: Service.cpuPct,
-        cpuTempC: Service.cpuTempC,
-        memPct: Service.memPct,
-        memUsedBytes: Service.memUsed,
-        memTotalBytes: Service.memTotal,
-        netDownBps: Service.netDown,
-        netUpBps: Service.netUp,
-        ioReadBps: Service.ioRead,
-        ioWriteBps: Service.ioWrite,
-        psi: Service.psi,
-        gpus: Service.gpus.map(function(g) {
+        host: Service.localMonitor.host,
+        uptimeSec: Service.localMonitor.uptimeSec,
+        load: [Service.localMonitor.load1, Service.localMonitor.load5, Service.localMonitor.load15],
+        cpuPct: Service.localMonitor.cpuPct,
+        cpuTempC: Service.localMonitor.cpuTempC,
+        memPct: Service.localMonitor.memPct,
+        memUsedBytes: Service.localMonitor.memUsed,
+        memTotalBytes: Service.localMonitor.memTotal,
+        netDownBps: Service.localMonitor.netDown,
+        netUpBps: Service.localMonitor.netUp,
+        ioReadBps: Service.localMonitor.ioRead,
+        ioWriteBps: Service.localMonitor.ioWrite,
+        psi: Service.localMonitor.psi,
+        gpus: Service.localMonitor.gpus.map(function(g) {
           return { label: g.label, name: g.name, busyPct: g.busy, tempC: g.celsius,
             vramUsed: g.vramUsed, vramTotal: g.vramTotal,
             gttUsed: g.gttUsed || 0, gttTotal: g.gttTotal || 0, apu: g.apu === true,
             memUsed: Model.gpuMemUsed(g), memTotal: Model.gpuMemTotal(g),
             powerW: g.powerW, asleep: g.asleep === true }
         }),
-        battery: Service.battery,
-        disks: Service.disks.map(function(d) { return { mount: d.mount, used: d.used, size: d.size } }),
-        driveHealth: Service.driveHealth,
-        alerts: Service.alertLog,
-        samplerMs: { last: Service.lastSampleMs, avg: Service.avgSampleMs }
+        battery: Service.localMonitor.battery,
+        disks: Service.localMonitor.disks.map(function(d) { return { mount: d.mount, used: d.used, size: d.size } }),
+        driveHealth: Service.localMonitor.driveHealth,
+        alerts: Service.localMonitor.alertLog,
+        samplerMs: { last: Service.localMonitor.lastSampleMs, avg: Service.localMonitor.avgSampleMs }
       })
     }
     function tab(name: string): string {
@@ -550,9 +600,9 @@ Panel {
     hasVisualContent: root.bar && root.bar.vertical ? root.verticalLines.length > 0 : text !== ""
     fixedWidth: !(root.bar && root.bar.vertical) && root.placeholderOnly ? Style.bar.iconSlot : -1
     fixedHeight: root.bar && root.bar.vertical ? root.verticalLines.length * Style.bar.iconSlot : -1
-    tooltipText: Service.ready
-      ? Service.host + " · up " + Model.fmtUptime(Service.uptimeSec) + " · load " + Service.load1.toFixed(2)
-        + (Service.battery ? " · bat " + Model.fmtPct(Service.battery.pct) + " " + Service.battery.status.toLowerCase() : "")
+    tooltipText: Service.localReady
+      ? Service.localMonitor.host + " · up " + Model.fmtUptime(Service.localMonitor.uptimeSec) + " · load " + Service.localMonitor.load1.toFixed(2)
+        + (Service.localMonitor.battery ? " · bat " + Model.fmtPct(Service.localMonitor.battery.pct) + " " + Service.localMonitor.battery.status.toLowerCase() : "")
       : "Argus"
 
     onPressed: function(b) {
@@ -659,14 +709,15 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(430))
-    contentHeight: panel.fittedContentHeight(header.implicitHeight + Style.space(12) + flick.contentHeight, Style.space(560))
+    contentHeight: panel.fittedContentHeight(header.implicitHeight + Style.space(12)
+      + (root.hostWaiting ? deviceNotice.implicitHeight + Style.space(24) : flick.contentHeight), Style.space(560))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
       // A focused text field owns the keyboard — h/j/k/l/x must be
       // typeable text there, not navigation.
-      blocked: root.procFilterFocused || root.mangoFieldFocused
+      blocked: root.procFilterFocused || root.mangoFieldFocused || root.deviceFieldFocused
       onCloseRequested: {
         if (confirmKill.opened) { root.pendingKill = null; return }
         if (root.eggActive) { root.eggActive = false; return }
@@ -705,7 +756,11 @@ Panel {
           title: root.eggActive ? "ARGUS PANOPTES" : (Service.host !== "" ? Service.host : "Argus")
           meta: root.eggActive
             ? "One hundred eyes, ever watchful."
-            : (Service.ready
+            : (!Service.viewReachable
+              ? "Can't reach " + Service.view.sshTarget
+                + (Service.view.lastError !== "" ? " · " + Service.view.lastError : "")
+                + (Service.ready ? " · last sample shown" : "")
+              : Service.ready
               ? "up " + Model.fmtUptime(Service.uptimeSec) + " · load " + Service.load1.toFixed(2)
               : "Gathering data…")
           foreground: root.foreground
@@ -771,6 +826,39 @@ Panel {
                 duration: 450
                 easing.type: Easing.OutCubic
               }
+            }
+          }
+        }
+
+        // Machine switch: this machine and every SSH device, like the
+        // Agents panel's provider switch. Everything below follows the
+        // selection; the bar keeps showing this machine. Three per row, so
+        // names stay readable with many devices.
+        Flow {
+          id: hostSwitch
+          visible: Service.hosts.length > 1
+          width: parent.width
+          spacing: Style.spacing.md
+
+          readonly property int perRow: Math.min(3, Math.max(1, Service.hosts.length))
+          readonly property real cellWidth: (width - spacing * (perRow - 1)) / perRow
+
+          Repeater {
+            model: Service.hosts
+
+            Button {
+              required property var modelData
+              required property int index
+
+              width: hostSwitch.cellWidth
+              text: modelData.label + (modelData.remote && !modelData.reachable ? " · offline" : "")
+              selected: index === Service.hostIndex
+              bordered: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              verticalPadding: Style.spacing.controlPaddingY
+              onClicked: Service.selectHost(index)
             }
           }
         }
@@ -876,8 +964,30 @@ Panel {
         }
       }
 
+      Text {
+        id: deviceNotice
+        visible: root.hostWaiting
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: header.bottom
+        anchors.topMargin: Style.space(24)
+        text: Service.viewReachable
+          ? "Connecting to " + Service.view.sshTarget + "…"
+          : "No data from " + Service.view.sshTarget + ". Argus retries every 30 seconds; "
+            + "check that `ssh " + Service.view.sshTarget + "` works without a password prompt."
+        textFormat: Text.PlainText
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        horizontalAlignment: Text.AlignHCenter
+        wrapMode: Text.WordWrap
+      }
+
       Flickable {
         id: flick
+        // A device that hasn't answered yet has no numbers to show;
+        // zeros would read as a machine at rest.
+        visible: !root.hostWaiting
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: header.bottom
@@ -2188,6 +2298,135 @@ Panel {
             spacing: Style.space(8)
 
             PanelSectionHeader {
+              text: "DEVICES"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            // Every machine Argus watches: this one, then each SSH device
+            // with its live status. The panel's machine switch lists the
+            // same set.
+            Repeater {
+              model: Service.hosts
+
+              RowLayout {
+                id: deviceRow
+                required property var modelData
+                readonly property var host: modelData
+                width: parent.width
+                spacing: Style.space(8)
+
+                Column {
+                  Layout.fillWidth: true
+                  spacing: Style.space(2)
+
+                  Text {
+                    width: parent.width
+                    text: deviceRow.host.label
+                    textFormat: Text.PlainText
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    elide: Text.ElideRight
+                  }
+
+                  Text {
+                    width: parent.width
+                    text: !deviceRow.host.remote ? "this machine"
+                      : "ssh " + deviceRow.host.sshTarget + " · "
+                        + (!deviceRow.host.reachable
+                          ? "offline" + (deviceRow.host.lastError !== "" ? " (" + deviceRow.host.lastError + ")" : "")
+                          : (deviceRow.host.ready ? "online" : "connecting…"))
+                    textFormat: Text.PlainText
+                    color: deviceRow.host.remote && !deviceRow.host.reachable ? root.urgent : root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    elide: Text.ElideRight
+                  }
+                }
+
+                PanelActionButton {
+                  visible: deviceRow.host.remote
+                  iconText: "\u{f0156}"
+                  tooltipText: "Remove " + deviceRow.host.sshTarget
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  size: Style.space(24)
+                  onClicked: root.removeDevice(deviceRow.host.sshTarget)
+                }
+              }
+            }
+
+            RowLayout {
+              width: parent.width
+              spacing: Style.space(8)
+
+              TextField {
+                id: deviceSshInput
+                Layout.fillWidth: true
+                placeholderText: "pi or user@host"
+                foreground: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                onActiveFocusChanged: root.deviceFieldFocused = activeFocus || deviceNameInput.activeFocus
+                onTextChanged: root.deviceError = ""
+                Keys.onReturnPressed: deviceAddButton.submit()
+                Keys.onEscapePressed: keyCatcher.forceActiveFocus()
+              }
+
+              TextField {
+                id: deviceNameInput
+                Layout.preferredWidth: Style.space(120)
+                placeholderText: "name"
+                foreground: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                onActiveFocusChanged: root.deviceFieldFocused = activeFocus || deviceSshInput.activeFocus
+                Keys.onReturnPressed: deviceAddButton.submit()
+                Keys.onEscapePressed: keyCatcher.forceActiveFocus()
+              }
+
+              Button {
+                id: deviceAddButton
+                text: "Add"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: submit()
+
+                function submit() {
+                  if (!root.addDevice(deviceSshInput.text, deviceNameInput.text)) return
+                  deviceSshInput.text = ""
+                  deviceNameInput.text = ""
+                  keyCatcher.forceActiveFocus()
+                }
+              }
+            }
+
+            Text {
+              visible: root.deviceError !== ""
+              width: parent.width
+              text: root.deviceError
+              textFormat: Text.PlainText
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              width: parent.width
+              text: "Watch another machine over ssh. It needs key login (no password prompt) and bash; nothing is installed on it. The name is optional. Switch machines under the title or with [ ]; the bar keeps showing this one."
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            PanelSectionHeader {
               text: "SHOW IN BAR"
               foreground: root.foreground
               fontFamily: root.fontFamily
@@ -3135,6 +3374,16 @@ Panel {
             font.pixelSize: Style.font.caption
             horizontalAlignment: Text.AlignHCenter
           }
+
+          Text {
+            visible: Service.hosts.length > 1
+            width: parent.width
+            text: "[ ]: switch machine"
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            horizontalAlignment: Text.AlignHCenter
+          }
         }
       }
 
@@ -3208,7 +3457,7 @@ Panel {
         fontFamily: root.fontFamily
         onCanceled: root.pendingKill = null
         onConfirmed: {
-          Quickshell.execDetached(["kill", "-" + (root.pendingKill.sig || "TERM"), String(root.pendingKill.pid)])
+          Service.killProcess(root.pendingKill.pid, root.pendingKill.sig || "TERM")
           root.pendingKill = null
           killRefresh.restart()
         }
