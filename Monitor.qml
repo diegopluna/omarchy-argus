@@ -6,14 +6,33 @@ import "Model.js" as Model
 
 // One machine's system-monitor state: polls sample.sh on a timer and
 // exposes parsed, delta-derived data. Service (the singleton every bar
-// surface binds to) owns the Monitor, so multi-monitor setups still run
-// ONE sampler regardless of how many bar surfaces show the widget.
+// surface binds to) owns one Monitor for this machine and one per SSH
+// device, so multi-monitor setups still run ONE sampler per machine. A
+// device's Monitor streams the same sample.sh to `bash -s` over ssh
+// (nothing is installed remotely) and parses it identically.
 // Hardware identity (hostname, CPU model, disk models, GPU names) is
 // sampled once at startup via `sample.sh static` and merged into every
 // dynamic tick, so lsblk/lspci never run on the hot path. Panel-only data
 // (top processes) is sampled only while the panel shows this machine.
 Scope {
   id: root
+
+  // Empty for this machine; otherwise the device's ssh destination.
+  property string sshTarget: ""
+  property string hostId: "local"
+  property string label: ""
+  readonly property bool remote: sshTarget !== ""
+
+  // Desktop notifications and the alert hook fire for this machine only;
+  // a device past a threshold still renders urgent in the panel.
+  readonly property bool alertsAllowed: !remote
+
+  // False once a device stops answering; the panel says so instead of
+  // passing stale numbers off as live. Retried every 30s.
+  property bool reachable: true
+  property string lastError: ""
+  property int _failures: 0
+  property double _lastAttemptAt: 0
 
   // Bound by Service from the widget's shell.json entry.
   property var settings: ({})
@@ -173,7 +192,38 @@ Scope {
 
   // force skips the cadence throttles — panel opens and user-triggered
   // refreshes should never show stale temperatures.
+  // Every sample.sh invocation goes through here. For a device, the
+  // script travels on stdin over a multiplexed ssh connection: the control
+  // master turns a tick into one channel on an open connection instead of
+  // a handshake, BatchMode never prompts, and the outer timeout bounds a
+  // hung link. The destination follows `--`, so it can't be an option.
+  function sampler(args) {
+    if (!remote) return ["bash", scriptPath].concat(args)
+    return ["bash", "-c",
+      'script=$1; target=$2; shift 2; exec timeout 15 ssh -T -o BatchMode=yes -o ConnectTimeout=5 '
+      + '-o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o ControlMaster=auto '
+      + '-o "ControlPath=${XDG_RUNTIME_DIR:-/tmp}/argus-ssh-%C" -o ControlPersist=120 '
+      + '-- "$target" bash -s -- "$@" < "$script"',
+      "argus-ssh", scriptPath, sshTarget].concat(args)
+  }
+
+  // Two failed samples in a row mark a device unreachable (one dropped
+  // tick on a flaky link shouldn't flash "offline").
+  function _sampleFailed(exitCode) {
+    _failures++
+    if (_failures >= 2) reachable = false
+    lastError = exitCode === 124 ? "timed out" : (exitCode === 255 ? "ssh failed" : "exit " + exitCode)
+  }
+
+  function _sampleOk() {
+    _failures = 0
+    reachable = true
+    lastError = ""
+  }
+
   function refresh(force) {
+    if (remote && !reachable && !force && Date.now() - _lastAttemptAt < 30000) return
+    _lastAttemptAt = Date.now()
     if (_staticText === "") {
       if (!staticProc.running) staticProc.running = true
       return
@@ -352,7 +402,7 @@ Scope {
   // Temperatures and battery are critical; the rest normal. The `alerts`
   // setting remains a master switch over everything, including the
   // per-sensor TEMP-tab thresholds.
-  readonly property bool alertsEnabled: !settings || settings.alerts !== "Off"
+  readonly property bool alertsEnabled: alertsAllowed && (!settings || settings.alerts !== "Off")
   readonly property var enabledAlerts: Model.normalizeAlertsOn(settings ? settings.alertsOn : null)
   readonly property int alertHoldTicks: 3
   readonly property int alertCooldownMs: 300000
@@ -503,7 +553,7 @@ Scope {
     var home = Quickshell.env("HOME")
     return (xdg && xdg !== "" ? xdg : home + "/.local/state") + "/argus"
   }
-  readonly property string historyPath: stateDir + "/history.json"
+  readonly property string historyPath: stateDir + "/" + (remote ? Model.deviceHistoryFile(sshTarget) : "history.json")
 
   function _saveHistory() {
     if (!ready) return
@@ -512,8 +562,8 @@ Scope {
     // and lands via a tmp-file rename so a crash mid-write can't leave
     // a truncated history behind.
     Quickshell.execDetached(["bash", "-c",
-      'mkdir -p "$1" && printf %s "$2" > "$1/.history.tmp" && mv "$1/.history.tmp" "$1/history.json"',
-      "argus-history", stateDir, json])
+      'mkdir -p "$1" && printf %s "$2" > "$1/.$3.tmp" && mv "$1/.$3.tmp" "$1/$3"',
+      "argus-history", stateDir, json, historyPath.split("/").pop()])
   }
 
   Timer {
@@ -543,10 +593,13 @@ Scope {
 
   Process {
     id: staticProc
-    command: ["bash", root.scriptPath, "static"]
+    command: root.sampler(["static"])
+    onExited: function(exitCode) { if (exitCode !== 0) root._sampleFailed(exitCode) }
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        if (text.indexOf("###HOST") === -1) return
+        root._sampleOk()
         root._staticText = text
         root.refresh()
         // First drive-health sample once identity is in; a failing drive
@@ -562,7 +615,7 @@ Scope {
   // shell session; the DISK tab renders it urgent either way.
   Process {
     id: healthProc
-    command: ["bash", root.scriptPath, "health"]
+    command: root.sampler(["health"])
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -586,10 +639,15 @@ Scope {
     id: proc
     // Flags computed per tick in refresh(): cadence throttles (fast /
     // netinfo) and the PROC-tab-only full process table.
-    command: ["bash", root.scriptPath, "dynamic"].concat(root._dynArgs)
+    command: root.sampler(["dynamic"].concat(root._dynArgs))
+    onExited: function(exitCode) { if (exitCode !== 0) root._sampleFailed(exitCode) }
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.apply(text)
+      onStreamFinished: {
+        if (text.indexOf("###STAT") === -1) return
+        root._sampleOk()
+        root.apply(text)
+      }
     }
   }
 
@@ -597,7 +655,7 @@ Scope {
   // open. The snapshot also refreshes the PROC tab's kept-last lists.
   Process {
     id: psProc
-    command: ["bash", root.scriptPath, "ps"]
+    command: root.sampler(["ps"])
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {

@@ -914,6 +914,35 @@ const livePanel = Model.parseSample(execSync("bash " + script + " dynamic panel"
 assert.ok(Array.isArray(livePanel.gpuProcs))
 if (!CI) assert.ok(livePanel.gpuProcs.length > 0, "live DRM clients found")
 
+// ---- SSH devices ----------------------------------------------------------
+assert.deepStrictEqual(Model.normalizeDevices(undefined), [])
+assert.deepStrictEqual(Model.normalizeDevices("pi"), [], "a bare string is not a list")
+assert.deepStrictEqual(Model.normalizeDevices({ length: 1, 0: { ssh: "pi" } }), [{ ssh: "pi", name: "" }],
+  "array-like lists (QML's) are accepted")
+assert.deepStrictEqual(Model.normalizeDevices([
+  { ssh: " pi ", name: " Raspberry Pi " },
+  { ssh: "pi", name: "duplicate" },
+  { ssh: "-oProxyCommand=evil" },
+  { ssh: "two words" },
+  { ssh: "" },
+  "not an object",
+  { ssh: "me@nas" }
+]), [{ ssh: "pi", name: "Raspberry Pi" }, { ssh: "me@nas", name: "" }], "devices normalized")
+assert.strictEqual(Model.deviceSshError("pi"), "")
+assert.ok(Model.deviceSshError("").length > 0, "empty destination refused")
+assert.ok(Model.deviceSshError("-J evil").length > 0, "option-shaped destination refused")
+{
+  const added = Model.addDevice([], "pi", "Raspberry Pi")
+  assert.strictEqual(added.error, "")
+  assert.deepStrictEqual(added.devices, [{ ssh: "pi", name: "Raspberry Pi" }])
+  const dup = Model.addDevice(added.devices, " pi ", "")
+  assert.ok(/already added/.test(dup.error), "duplicate refused")
+  assert.deepStrictEqual(dup.devices, added.devices, "refused add leaves the list alone")
+  assert.deepStrictEqual(Model.removeDevice(added.devices, "pi"), [])
+}
+assert.strictEqual(Model.deviceHistoryFile("me@nas.local"), "history-me_nas.local.json")
+assert.strictEqual(Model.deviceHistoryFile("../x"), "history-.._x.json", "no path separators")
+
 // ---- Fixture corpus -------------------------------------------------------
 // Every file in tests/fixtures/ is a scrubbed `sample.sh` capture from a
 // real machine (see tests/make-fixture.sh). Each one must parse cleanly

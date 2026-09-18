@@ -4,6 +4,18 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Watch other machines over SSH.** SETUP gains a DEVICES section: add
+  an ssh destination such as `pi` or `user@host` and the panel gets a
+  machine switch under its title (`[` / `]` on the keyboard). Devices run
+  the same `sample.sh` over a multiplexed ssh connection, so nothing is
+  installed on them. Each keeps its own history file, unreachable devices
+  are marked offline with the reason and retried every 30 seconds, and the
+  bar and alerts stay on this machine. New IPC: `hosts`, `host`,
+  `addDevice`, `removeDevice`.
+
 ## [1.2.3] — 2026-09-04
 
 ### Fixed

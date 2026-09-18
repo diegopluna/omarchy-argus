@@ -125,6 +125,45 @@ Disabling removes the widget from the bar; the only state Argus writes is
 its own entry in `~/.config/omarchy/shell.json` and the flight-recorder
 history at `~/.local/state/argus/history.json`.
 
+## Other machines over SSH
+
+Argus can watch other machines too: a Raspberry Pi, a home server, a
+second laptop. Open **SETUP**, type an ssh destination under **DEVICES**
+(`pi`, `user@host` or any `~/.ssh/config` alias), give it an optional
+name, and press **Add**. A switch then appears under the panel title;
+click a machine or press `[` / `]` to move between them. Every tab except
+GAME works for a device, and the process list can end its processes.
+The bar always shows this machine.
+
+| Device view | DEVICES in SETUP | Unreachable device |
+|---|---|---|
+| ![Device view](screenshots/device-home.png) | ![Devices setup](screenshots/device-setup.png) | ![Offline device](screenshots/device-offline.png) |
+
+Nothing is installed on the other machine. Argus streams the same
+`sample.sh` it runs locally to `bash -s` over ssh, so the device needs
+bash, the usual `/proc` and `/sys` files, and **key login without a
+password prompt** (`ssh -o BatchMode=yes <host> true` should succeed).
+One multiplexed connection per device is reused between samples.
+Tailscale MagicDNS names work, so a device stays reachable away from home.
+
+- Devices are sampled every `intervalSec`, like this machine, so their
+  sparklines and history keep filling while the panel is closed.
+- After two failed samples the device is marked offline: the switch shows
+  `· offline`, SETUP shows the reason, and Argus retries every 30 seconds.
+- Each device keeps its own flight recorder file,
+  `~/.local/state/argus/history-<host>.json`.
+- Alerts only fire for this machine.
+
+The list is stored in `shell.json`, so it can also be written by hand:
+
+```json
+{
+  "id": "io.github.diegopluna.argus",
+  "localName": "Omarchy Air",
+  "devices": [{ "ssh": "pi", "name": "Raspberry Pi" }]
+}
+```
+
 ## Settings
 
 Inline settings on the widget's entry in `shell.json`:
@@ -138,6 +177,8 @@ Inline settings on the widget's entry in `shell.json`:
 | `alerts` | `"On"` | Master switch over every alert notification |
 | `alertCommand` | — | Shell command run on every fired alert (see below) |
 | `alertsOn` | `[]` | Alert keys the user toggled on (edited from the ALERTS tab) |
+| `devices` | `[]` | Other machines to watch, as `{ "ssh": "pi", "name": "Raspberry Pi" }` (edited from the SETUP tab) |
+| `localName` | hostname | Name of this machine in the machine switch |
 
 Urgent thresholds — one per metric (`urgentCpuPct`, `urgentCpuTempC`,
 `urgentMemPct`, `urgentGpuPct`, `urgentGpuTempC`, `urgentVramPct`,
@@ -294,8 +335,15 @@ omarchy-shell io.github.diegopluna.argus toggle
 omarchy-shell io.github.diegopluna.argus refresh
 omarchy-shell io.github.diegopluna.argus tab TEMP
 omarchy-shell io.github.diegopluna.argus span 24h  # sparkline span: 2m|1h|24h
-omarchy-shell io.github.diegopluna.argus metrics   # current snapshot as JSON, for scripts
+omarchy-shell io.github.diegopluna.argus metrics   # current snapshot of this machine as JSON, for scripts
+omarchy-shell io.github.diegopluna.argus hosts     # machines in the switch, as JSON
+omarchy-shell io.github.diegopluna.argus host next # or prev, a name, or an ssh destination
+omarchy-shell io.github.diegopluna.argus addDevice pi "Raspberry Pi"
+omarchy-shell io.github.diegopluna.argus removeDevice pi
 ```
+
+`host next` bound to a key in Hyprland switches machines without opening
+the panel first.
 
 ## Data sources
 
