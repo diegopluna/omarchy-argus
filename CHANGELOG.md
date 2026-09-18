@@ -4,6 +4,17 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **ARM machines showed no CPU name, and the Raspberry Pi no CPU
+  temperature.** ARM `/proc/cpuinfo` has no `model name` line, so the
+  CPU name now falls back to lscpu's core clusters (`Cortex-A76`;
+  `Icestorm-M1 + Firestorm-M1` on Apple Silicon). An identity section
+  that is present but empty no longer throws in `parseSample`. The
+  Raspberry Pi's `cpu_thermal` sensor now counts as the CPU temperature.
+  New fixtures: Raspberry Pi 5 and Apple M1 (Asahi Linux).
+
 ## [1.2.3] — 2026-09-04
 
 ### Fixed

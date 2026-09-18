@@ -120,7 +120,10 @@ if [ "$mode" != "dynamic" ]; then
   cat /proc/sys/kernel/hostname 2>/dev/null
 
   echo '###CPUNAME'
-  grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^[[:space:]]*//'
+  # ARM (Apple Silicon, Raspberry Pi) has no "model name" in cpuinfo;
+  # lscpu names each core cluster instead ("Icestorm-M1 + Firestorm-M1").
+  grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^[[:space:]]*//' | grep . \
+    || lscpu 2>/dev/null | awk -F: '/^Model name/ { sub(/^[[:space:]]+/, "", $2); if (!seen[$2]++) out = out (out == "" ? "" : " + ") $2 } END { if (out != "") print out }'
 
   echo '###KERNEL'
   uname -r

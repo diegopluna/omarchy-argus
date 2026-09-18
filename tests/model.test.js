@@ -957,6 +957,21 @@ for (const name of fixtures) {
 }
 console.log("fixtures:", fixtures.join(" "))
 
+// ARM SoCs (Raspberry Pi) name the CPU's sensor cpu_thermal, and their
+// cpuinfo has no "model name" — sample.sh falls back to lscpu's cluster
+// names, and an empty identity section must still parse.
+{
+  const pi = Model.parseSample(fs.readFileSync(path.join(fixturesDir, "raspberry-pi-5.txt"), "utf8"))
+  assert.strictEqual(pi.cpuName, "Cortex-A76", "ARM cpu name via lscpu")
+  assert.ok(Math.abs(Model.cpuTemp(pi.temps) - 49.05) < 0.01, "cpu_thermal is the CPU temperature")
+  const bare = Model.parseSample("###HOST\nbox\n###CPUNAME\n###KERNEL\n6.1\n###STAT\ncpu 1 0 1 1 0 0 0 0\n")
+  assert.strictEqual(bare.cpuName, "", "empty CPUNAME section parses")
+  assert.strictEqual(bare.kernel, "6.1")
+  // Apple Silicon has two clusters; lscpu names both, once each.
+  const m1 = Model.parseSample(fs.readFileSync(path.join(fixturesDir, "apple-m1-asahi.txt"), "utf8"))
+  assert.strictEqual(m1.cpuName, "Icestorm-M1 + Firestorm-M1", "ARM clusters joined")
+}
+
 console.log("bar text:", barText)
 console.log("cpu temp:", Model.fmtTemp(barData.cpuTemp), "gpus:", sample.gpus.length,
   "disks:", sample.disks.map(d => d.mount).join(" "),
