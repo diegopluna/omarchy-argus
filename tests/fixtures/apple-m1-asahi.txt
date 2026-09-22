@@ -1,0 +1,119 @@
+###HOST
+fixture-host
+###CPUNAME
+Icestorm-M1 + Firestorm-M1
+###KERNEL
+7.1.13-3-1-ARCH
+###CHASSIS
+9
+###DISKNAMES
+nvme0n1 APPLE SSD AP0256Q
+nvme0n2 APPLE SSD AP0256Q
+nvme0n3 APPLE SSD AP0256Q
+###DISKLINKS
+nvme0n1 
+nvme0n1p1 nvme0n1
+nvme0n1p2 nvme0n1
+nvme0n1p3 nvme0n1
+nvme0n1p4 nvme0n1
+nvme0n1p5 nvme0n1
+root nvme0n1p5
+nvme0n1p6 nvme0n1
+nvme0n2 
+nvme0n3 
+###GPUNAMES
+###GPUPDEV
+0|206400000.gpu
+2|soc:display-subsystem
+###CPUTOPO
+0|0||2064000
+1|1||2064000
+2|2||2064000
+3|3||2064000
+4|0||2988000
+5|1||2988000
+6|2||2988000
+7|3||2988000
+###STAT
+cpu  12896133 339099 2546418 111143722 22679 588128 138209 0 0 0
+cpu0 2906478 73418 559117 12117899 4416 184098 52535 0 0 0
+cpu1 2983314 79819 560746 12109721 5185 123828 29315 0 0 0
+cpu2 2981319 79529 567439 12112015 4900 122653 23771 0 0 0
+cpu3 2965962 79991 575232 12118418 5168 122036 21578 0 0 0
+cpu4 415448 7101 97854 15481493 1084 13152 6389 0 0 0
+cpu5 276552 6187 79913 15651327 739 9105 2057 0 0 0
+cpu6 199155 6939 57253 15755286 663 6981 1380 0 0 0
+cpu7 167900 6112 48860 15797560 520 6272 1181 0 0 0
+###MEM
+MemTotal:       16052592 kB
+MemFree:         3073040 kB
+MemAvailable:    9272784 kB
+Buffers:             208 kB
+Cached:          7654128 kB
+SwapTotal:             0 kB
+SwapFree:              0 kB
+Dirty:               768 kB
+Shmem:           1647488 kB
+SReclaimable:     304976 kB
+###SWAPS
+###LOAD
+0.56 1.89 2.62 1/1027 2951133
+254534.94 1111437.24
+###CPUFREQ
+0|2064000
+1|2064000
+2|2064000
+3|2064000
+4|1056000
+5|1056000
+6|1056000
+7|1056000
+###POWER
+###NET
+    lo: 14900186  185257    0    0    0     0          0         0 14900186  185257    0    0    0     0       0          0
+ wlan0: 7435070378 6797376    0  153    0     0          0    110970 1047182221 2933301    0   35    0     0       0          0
+tailscale0: 145138300  387176    0    0    0     0          0         0 90435441  274119    0    0    0     0       0          0
+proton0: 6917158300 5904233    0    0    0     0          0         0 784277196 2308065    0  114    0     0       0          0
+ipv6leakintrf0:       0       0    0    0    0     0          0         0  5890492   57486    0    0    0     0       0          0
+###DF
+/dev/mapper/root 81146150912 24906313728 /
+/dev/mapper/root 81146150912 24906313728 /var/log
+/dev/nvme0n1p4     523132928   204480512 /boot
+/dev/mapper/root 81146150912 24906313728 /home
+###PSI
+cpu some avg10=4.61 avg60=5.53 avg300=11.78 total=18140539706
+cpu full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+memory some avg10=0.00 avg60=0.00 avg300=0.00 total=3143700
+memory full avg10=0.00 avg60=0.00 avg300=0.00 total=1777067
+io some avg10=0.00 avg60=0.00 avg300=0.00 total=75239923
+io full avg10=0.00 avg60=0.00 avg300=0.00 total=50573499
+###NETPHYS
+wlan0
+###DISKSTATS
+ 259       0 nvme0n1 209974 62660 24530632 82094 3196666 666386 133690280 309375 0 151051 480946 184386 0 1076792000 8508 97976 80967
+ 259       1 nvme0n1p1 43 0 4640 6 0 0 0 0 0 5 6 0 0 0 0 0 0
+ 259       2 nvme0n1p2 43 0 4640 18 0 0 0 0 0 17 18 0 0 0 0 0 0
+ 259       3 nvme0n1p3 43 0 4640 12 0 0 0 0 0 13 12 0 0 0 0 0 0
+ 259       4 nvme0n1p4 376 233 79904 69 6 0 72 0 0 63 70 0 0 0 0 0 0
+ 259       5 nvme0n1p5 209354 62427 24428688 81960 3196655 666386 133690208 309369 0 160480 399839 184386 0 1076792000 8508 0 0
+ 259       6 nvme0n1p6 46 0 4760 14 0 0 0 0 0 13 14 0 0 0 0 0 0
+ 259       7 nvme0n2 62 0 2240 20 0 0 0 0 0 20 20 0 0 0 0 0 0
+ 259       8 nvme0n3 77 0 5248 14 0 0 0 0 0 11 14 0 0 0 0 0 0
+ 252       0 dm-0 271723 0 24426944 222476 3863038 0 133690208 5966711 0 310114 6189653 184386 0 1076792000 466 0 0
+###TEMP
+macsmc_battery|temp|27700|
+macsmc_hwmon|NAND Flash Temperature|34302|
+macsmc_hwmon|Battery Hotspot|27699|
+macsmc_hwmon|Charge Regulator Temp|34875|
+macsmc_hwmon|WiFi/BT Module Temp|36472|
+tas2770||28687|
+tas2770||23750|
+###FAN
+###GPU
+###GPUINTEL
+###NVIDIA
+###PS
+###NETINFO
+###GPUPROC
+###BAT
+macsmc-battery|Not charging|80|33709800|41302200|49954800|0|bq20z451|80

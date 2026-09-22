@@ -131,9 +131,11 @@ function parseSample(text, staticCtx) {
   // top-10 sections instead — accept either.
   var psAll = parsePs(sections.PS || [])
   return {
-    host: staticCtx ? staticCtx.host : (sections.HOST || [""])[0].trim(),
-    cpuName: staticCtx ? staticCtx.cpuName : (sections.CPUNAME || [""])[0].trim(),
-    kernel: staticCtx ? staticCtx.kernel : (sections.KERNEL || [""])[0].trim(),
+    // An identity section can be present but empty (no "model name" in
+    // an ARM cpuinfo without lscpu), so guard the element, not the array.
+    host: staticCtx ? staticCtx.host : String((sections.HOST || [])[0] || "").trim(),
+    cpuName: staticCtx ? staticCtx.cpuName : String((sections.CPUNAME || [])[0] || "").trim(),
+    kernel: staticCtx ? staticCtx.kernel : String((sections.KERNEL || [])[0] || "").trim(),
     chassisType: staticCtx ? staticCtx.chassisType : Number((sections.CHASSIS || [""])[0]) || 0,
     cpus: parseStat(sections.STAT || []),
     mem: parseMem(sections.MEM || []),
@@ -1041,6 +1043,8 @@ function cpuTemp(temps) {
     if (t.chip === "k10temp" && t.label === "Tctl") return t.celsius
     if (t.chip === "zenpower" && t.label === "Tdie") return t.celsius
     if (t.chip === "coretemp" && /Package/.test(t.label)) return t.celsius
+    // Raspberry Pi and other ARM SoCs: the SoC thermal zone is the CPU.
+    if (t.chip === "cpu_thermal") return t.celsius
     if (!isFinite(fallback) && (t.chip === "k10temp" || t.chip === "zenpower" || t.chip === "coretemp")) {
       fallback = t.celsius
     }
