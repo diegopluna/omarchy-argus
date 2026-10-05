@@ -559,6 +559,7 @@ Scope {
     io: { read: ioRead, write: ioWrite },
     netDown: netDown,
     netUp: netUp,
+    netAggregate: !!(settings && settings.aggregateNet),
     load1: load1,
     cores: corePcts.length,
     battery: battery,

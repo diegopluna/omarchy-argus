@@ -115,6 +115,16 @@ assert.ok(barText.includes("61%"), "bar shows ram")
 assert.ok(barText.includes("1.86"), "bar shows load")
 assert.ok(Model.metricValue("io", barData).includes("R1.0M"), "io metric renders rates")
 
+// Net: split down/up by default; aggregateNet folds them into one rate.
+const netSplit = Model.metricValue("net", barData)
+assert.ok(netSplit.includes("\u{f0045}") && netSplit.includes("\u{f005d}"), "net shows both directions by default")
+assert.ok(netSplit.includes("1.2M") && netSplit.includes("4.2K"), "net shows each rate")
+const aggData = Object.assign({}, barData, { netAggregate: true })
+assert.strictEqual(Model.metricValue("net", aggData), "\u{f0e79}\u00a01.2M")
+assert.strictEqual(Model.metricValue("net", aggData, true), "\u{f0e79}\u00a01.2M")
+assert.strictEqual(Model.metricValue("net", Object.assign({}, aggData, { netDown: 0, netUp: 0 }), true),
+  "\u{f0e79}\u00a00\u00a0\u00a0\u00a0", "aggregate net pads to 4")
+
 // NVIDIA parsing (fixture-based: nvidia-smi csv,noheader,nounits output,
 // now including power.draw).
 const nv = Model.parseNvidia([
@@ -492,11 +502,15 @@ assert.strictEqual(segs[1].urgent, false)
 // icon so the panel stays reachable.
 assert.strictEqual(Model.barText([], barData), Model.PLACEHOLDER_ICON)
 assert.strictEqual(Model.barText(["gputemp"], { gpu: null }), Model.PLACEHOLDER_ICON)
-assert.deepStrictEqual(Model.barLines([], barData), [{ text: Model.PLACEHOLDER_ICON, urgent: false }])
+// The vertical bar's placeholder is the widget's call: barLines stays empty,
+// including when only the rate metrics it skips are selected.
+assert.deepStrictEqual(Model.barLines([], barData), [])
+assert.deepStrictEqual(Model.barLines(["net", "io"], barData), [])
 assert.ok(Model.barText(["cpu"], barData) !== Model.PLACEHOLDER_ICON)
 const lines = Model.barLines(["cpu", "net", "io", "bat"], Object.assign({}, barData, { battery: summary }))
 assert.strictEqual(lines.length, 4, "net and io skipped, cpu 2 lines + bat 2 lines")
 assert.strictEqual(lines[3].text, "76%")
+assert.deepStrictEqual(lines.map(l => l.key), ["cpu", "cpu", "bat", "bat"], "lines carry their metric for click routing")
 
 // Show-list editing: order preserved, moves clamp at the edges.
 const toggled = Model.toggleShow(["cpu", "ram"], "disk")
@@ -506,6 +520,20 @@ assert.deepStrictEqual(Model.normalizeShow(["disk", "cpu", "bogus"]), ["disk", "
 assert.deepStrictEqual(Model.moveShow(["cpu", "ram", "disk"], "disk", -1), ["cpu", "disk", "ram"])
 assert.deepStrictEqual(Model.moveShow(["cpu", "ram"], "cpu", -1), ["cpu", "ram"], "clamped at top")
 assert.deepStrictEqual(Model.moveShow(["cpu", "ram"], "ram", 1), ["cpu", "ram"], "clamped at bottom")
+
+// Hover line: same list mechanics, rendered in HOVER_ITEMS order.
+assert.deepStrictEqual(Model.normalizeHover(null), Model.DEFAULT_HOVER)
+assert.deepStrictEqual(Model.normalizeHover(["load", "host", "junk", "host"]), ["load", "host"])
+assert.deepStrictEqual(Model.toggleHover(["host"], "cpu"), ["host", "cpu"])
+assert.deepStrictEqual(Model.toggleHover(["host", "cpu"], "host"), ["cpu"])
+assert.deepStrictEqual(Model.toggleHover(["host"], "nonsense"), ["host"], "unknown keys don't toggle on")
+const hoverData = Object.assign({}, barData, { load1: 1.5, battery: { pct: 76, status: "Discharging" } })
+assert.strictEqual(Model.hoverText(null, hoverData, "box", 3700), "box · up 1h 1m · load 1.50 · bat 76% discharging",
+  "default matches the pre-setting tooltip")
+assert.strictEqual(Model.hoverText(["load", "host"], hoverData, "box", 0), "box · load 1.50", "display order is fixed")
+assert.strictEqual(Model.hoverText(["host", "bat"], Object.assign({}, hoverData, { battery: null }), "box", 0), "box",
+  "absent battery is skipped")
+assert.strictEqual(Model.hoverText([], hoverData, "box", 0), "", "nothing selected: no tooltip")
 
 // PSI parsing (avg10 of each resource).
 const psi = Model.parsePsi([
@@ -1000,6 +1028,21 @@ for (const name of fixtures) {
   fx.driveHealth.forEach(d => assert.ok(Model.fmtDriveHealth(d).length > 0, tag + "drive health"))
 }
 console.log("fixtures:", fixtures.join(" "))
+
+// ARM SoCs (Raspberry Pi) name the CPU's sensor cpu_thermal, and their
+// cpuinfo has no "model name" — sample.sh falls back to lscpu's cluster
+// names, and an empty identity section must still parse.
+{
+  const pi = Model.parseSample(fs.readFileSync(path.join(fixturesDir, "raspberry-pi-5.txt"), "utf8"))
+  assert.strictEqual(pi.cpuName, "Cortex-A76", "ARM cpu name via lscpu")
+  assert.ok(Math.abs(Model.cpuTemp(pi.temps) - 49.05) < 0.01, "cpu_thermal is the CPU temperature")
+  const bare = Model.parseSample("###HOST\nbox\n###CPUNAME\n###KERNEL\n6.1\n###STAT\ncpu 1 0 1 1 0 0 0 0\n")
+  assert.strictEqual(bare.cpuName, "", "empty CPUNAME section parses")
+  assert.strictEqual(bare.kernel, "6.1")
+  // Apple Silicon has two clusters; lscpu names both, once each.
+  const m1 = Model.parseSample(fs.readFileSync(path.join(fixturesDir, "apple-m1-asahi.txt"), "utf8"))
+  assert.strictEqual(m1.cpuName, "Icestorm-M1 + Firestorm-M1", "ARM clusters joined")
+}
 
 console.log("bar text:", barText)
 console.log("cpu temp:", Model.fmtTemp(barData.cpuTemp), "gpus:", sample.gpus.length,
