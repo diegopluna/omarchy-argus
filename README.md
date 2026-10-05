@@ -133,7 +133,8 @@ second laptop. Open **SETUP**, type an ssh destination under **DEVICES**
 name, and press **Add**. A switch then appears under the panel title;
 click a machine or press `[` / `]` to move between them. Every tab except
 GAME works for a device, and the process list can end its processes.
-The bar always shows this machine.
+The bar always shows this machine, so clicking a bar metric brings the
+panel back to it.
 
 | Device view | DEVICES in SETUP | Unreachable device |
 |---|---|---|

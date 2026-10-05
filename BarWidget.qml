@@ -403,12 +403,16 @@ Panel {
   // Left click on a bar metric: open the panel on that metric's tab. With
   // the panel already open, a different metric switches tabs instead of
   // closing it. The placeholder eye leads to SETUP, where metrics are picked.
+  // The bar shows this machine, so a metric click brings the panel back to
+  // it from a device (hosts[0] is always this machine).
   function openFromBar(key) {
     var target = key === "placeholder" ? "SETUP" : tabForKey(key)
     if (!hasTab(target)) target = ""
+    var toLocal = key !== "placeholder" && Service.viewRemote
+    if (toLocal) Service.selectHost(0)
     if (opened) {
       if (target !== "" && target !== tab) tab = target
-      else close()
+      else if (!toLocal) close()
       return
     }
     requestedTab = target
