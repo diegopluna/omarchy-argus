@@ -151,7 +151,8 @@ Tailscale MagicDNS names work, so a device stays reachable away from home.
 - After two failed samples the device is marked offline: the switch shows
   `· offline`, SETUP shows the reason, and Argus retries every 30 seconds.
 - Each device keeps its own flight recorder file,
-  `~/.local/state/argus/history-<host>.json`.
+  `~/.local/state/argus/history-<host>.json` (characters outside
+  `A-Z a-z 0-9 . -` are hex-escaped, e.g. `me@nas` → `history-me_40nas.json`).
 - Alerts only fire for this machine.
 
 The list is stored in `shell.json`, so it can also be written by hand:

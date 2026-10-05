@@ -166,7 +166,13 @@ if [ "$mode" != "dynamic" ]; then
   done
 fi
 
-[ "$mode" = "static" ] && exit 0
+# Every static/dynamic sample closes with ###END. Monitor trusts only
+# output that ran to here, so a tick cut off by the timeout or a dropped
+# ssh link is never parsed as a complete sample.
+if [ "$mode" = "static" ]; then
+  echo '###END'
+  exit 0
+fi
 
 echo '###STAT'
 grep '^cpu' /proc/stat
@@ -440,3 +446,5 @@ for b in /sys/class/power_supply/*; do
   limit=""; rline "$b/charge_control_end_threshold" && limit=$REPLY
   echo "${b##*/}|$status|$capacity|$energy_now|$energy_full|$energy_design|$power_now|$model|$limit"
 done
+
+echo '###END'

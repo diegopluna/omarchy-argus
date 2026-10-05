@@ -2105,9 +2105,25 @@ function removeDevice(current, ssh) {
 }
 
 // A device's flight-recorder file, keyed by its destination so two
-// machines never share one.
+// machines never share one. Anything outside [A-Za-z0-9.-] — `_` included —
+// becomes `_` plus its UTF-8 bytes in hex, so the mapping is one-to-one
+// (`a@b` → a_40b, `a_b` → a_5Fb) and never yields a path separator.
 function deviceHistoryFile(ssh) {
-  return "history-" + String(ssh).replace(/[^A-Za-z0-9._-]/g, "_") + ".json"
+  var escaped = encodeURIComponent(String(ssh))
+    .replace(/[^A-Za-z0-9.%-]/g, function(c) { return "%" + c.charCodeAt(0).toString(16).toUpperCase() })
+    .replace(/%/g, "_")
+  return "history-" + escaped + ".json"
+}
+
+// True once a static/dynamic sample ran to sample.sh's closing ###END;
+// output cut short by a timeout or a dropped ssh link is partial.
+function sampleComplete(text) {
+  var lines = String(text || "").split("\n")
+  for (var i = lines.length - 1; i >= 0; i--) {
+    var line = lines[i].trim()
+    if (line !== "") return line === "###END"
+  }
+  return false
 }
 
 if (typeof module !== "undefined") {
@@ -2254,6 +2270,7 @@ if (typeof module !== "undefined") {
     normalizeDevices: normalizeDevices,
     addDevice: addDevice,
     removeDevice: removeDevice,
-    deviceHistoryFile: deviceHistoryFile
+    deviceHistoryFile: deviceHistoryFile,
+    sampleComplete: sampleComplete
   }
 }

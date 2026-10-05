@@ -212,7 +212,32 @@ Scope {
   function _sampleFailed(exitCode) {
     _failures++
     if (_failures >= 2) reachable = false
-    lastError = exitCode === 124 ? "timed out" : (exitCode === 255 ? "ssh failed" : "exit " + exitCode)
+    lastError = exitCode === 124 ? "timed out"
+      : exitCode === 255 ? "ssh failed"
+      : exitCode === 0 ? "incomplete sample"
+      : "exit " + exitCode
+  }
+
+  // A static/dynamic sample counts only once its process exited 0 AND
+  // its output ran to sample.sh's closing ###END, so a tick cut off by
+  // the timeout or a dropped link never clears the failure count or lands
+  // partial numbers. Quickshell doesn't order `exited` against the
+  // collector's streamFinished, so a clean exit waits for the output (or
+  // the output for the exit); a failed exit settles at once. Returns the
+  // output when the sample is good, "" otherwise.
+  function _settle(p) {
+    if (p.exitedWith === null) return ""
+    if (p.exitedWith === 0 && p.collected === null) return ""
+    var code = p.exitedWith
+    var text = p.collected
+    p.exitedWith = null
+    p.collected = null
+    if (code !== 0 || !Model.sampleComplete(text)) {
+      _sampleFailed(code)
+      return ""
+    }
+    _sampleOk()
+    return text
   }
 
   function _sampleOk() {
@@ -225,7 +250,11 @@ Scope {
     if (remote && !reachable && !force && Date.now() - _lastAttemptAt < 30000) return
     _lastAttemptAt = Date.now()
     if (_staticText === "") {
-      if (!staticProc.running) staticProc.running = true
+      if (!staticProc.running) {
+        staticProc.exitedWith = null
+        staticProc.collected = null
+        staticProc.running = true
+      }
       return
     }
     if (!proc.running) {
@@ -239,6 +268,8 @@ Scope {
       }
       _dynArgs = args
       _sampleStartedAt = Date.now()
+      proc.exitedWith = null
+      proc.collected = null
       proc.running = true
     }
   }
@@ -593,19 +624,28 @@ Scope {
 
   Process {
     id: staticProc
+    property var exitedWith: null
+    property var collected: null
     command: root.sampler(["static"])
-    onExited: function(exitCode) { if (exitCode !== 0) root._sampleFailed(exitCode) }
+    onExited: function(exitCode) {
+      staticProc.exitedWith = exitCode
+      staticProc.settle()
+    }
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        if (text.indexOf("###HOST") === -1) return
-        root._sampleOk()
-        root._staticText = text
-        root.refresh()
-        // First drive-health sample once identity is in; a failing drive
-        // should be surfaced without waiting for a panel open.
-        if (!healthProc.running) healthProc.running = true
+        staticProc.collected = text
+        staticProc.settle()
       }
+    }
+    function settle() {
+      var text = root._settle(staticProc)
+      if (text === "") return
+      root._staticText = text
+      root.refresh()
+      // First drive-health sample once identity is in; a failing drive
+      // should be surfaced without waiting for a panel open.
+      if (!healthProc.running) healthProc.running = true
     }
   }
 
@@ -637,17 +677,25 @@ Scope {
 
   Process {
     id: proc
+    property var exitedWith: null
+    property var collected: null
     // Flags computed per tick in refresh(): cadence throttles (fast /
     // netinfo) and the PROC-tab-only full process table.
     command: root.sampler(["dynamic"].concat(root._dynArgs))
-    onExited: function(exitCode) { if (exitCode !== 0) root._sampleFailed(exitCode) }
+    onExited: function(exitCode) {
+      proc.exitedWith = exitCode
+      proc.settle()
+    }
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        if (text.indexOf("###STAT") === -1) return
-        root._sampleOk()
-        root.apply(text)
+        proc.collected = text
+        proc.settle()
       }
+    }
+    function settle() {
+      var text = root._settle(proc)
+      if (text !== "") root.apply(text)
     }
   }
 

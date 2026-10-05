@@ -940,8 +940,23 @@ assert.ok(Model.deviceSshError("-J evil").length > 0, "option-shaped destination
   assert.deepStrictEqual(dup.devices, added.devices, "refused add leaves the list alone")
   assert.deepStrictEqual(Model.removeDevice(added.devices, "pi"), [])
 }
-assert.strictEqual(Model.deviceHistoryFile("me@nas.local"), "history-me_nas.local.json")
-assert.strictEqual(Model.deviceHistoryFile("../x"), "history-.._x.json", "no path separators")
+assert.strictEqual(Model.deviceHistoryFile("pi"), "history-pi.json")
+assert.strictEqual(Model.deviceHistoryFile("me@nas.local"), "history-me_40nas.local.json")
+assert.strictEqual(Model.deviceHistoryFile("../x"), "history-.._2Fx.json", "no path separators")
+assert.notStrictEqual(Model.deviceHistoryFile("a@b"), Model.deviceHistoryFile("a_b"), "escape char can't collide")
+{
+  const targets = ["a@b", "a_b", "a_40b", "a%40b", "a:b", "a/b", "a_2Fb", "héllo", "h_C3_A9llo", "a!b", "a~b", "a*b", "a'b", "a(b"]
+  const files = targets.map(Model.deviceHistoryFile)
+  assert.strictEqual(new Set(files).size, targets.length, "every destination gets its own file")
+  assert.ok(files.every(f => /^history-[A-Za-z0-9._-]+\.json$/.test(f)), "filenames stay in the safe set")
+}
+
+// A sample is trusted only once it ran to the closing marker.
+assert.ok(Model.sampleComplete(staticText), "live static sample is complete")
+assert.ok(Model.sampleComplete(dynamicText), "live dynamic sample is complete")
+assert.ok(Model.sampleComplete("###STAT\ncpu 1 2 3\n###END\n\n"), "trailing blank lines are fine")
+assert.ok(!Model.sampleComplete(dynamicText.slice(0, dynamicText.indexOf("###MEM"))), "cut-off sample is partial")
+assert.ok(!Model.sampleComplete(""), "empty output is partial")
 
 // ---- Fixture corpus -------------------------------------------------------
 // Every file in tests/fixtures/ is a scrubbed `sample.sh` capture from a
