@@ -2115,6 +2115,85 @@ function barLines(showKeys, data, th) {
   return lines
 }
 
+// ---- SSH devices ----------------------------------------------------------
+// Other machines Argus watches next to this one, persisted in shell.json as
+// `devices: [{ ssh: "pi", name: "Raspberry Pi" }]`. `ssh` is a destination
+// (user@host, or a Host alias from ~/.ssh/config); `name` is optional and
+// falls back to the machine's hostname once it answers.
+
+// Why `ssh` can't be a device, or "" when it can. The destination reaches
+// ssh after `--`, but refusing a leading "-" keeps an option-shaped value
+// from ever looking like one.
+function deviceSshError(ssh) {
+  var value = String(ssh === undefined || ssh === null ? "" : ssh).trim()
+  if (value === "") return "Enter an ssh destination, like pi or user@host"
+  if (value.charAt(0) === "-") return "An ssh destination can't start with -"
+  if (/\s/.test(value)) return "An ssh destination has no spaces"
+  return ""
+}
+
+// The stored list, cleaned: valid destinations only, first entry wins on
+// duplicates, names trimmed. Settings read back from shell.json arrive as
+// a QML list, which Array.isArray rejects — accept anything array-like.
+function normalizeDevices(value) {
+  var list = []
+  var seen = {}
+  if (!value || typeof value !== "object" || typeof value.length !== "number") return list
+  for (var i = 0; i < value.length; i++) {
+    var entry = value[i]
+    if (!entry || typeof entry !== "object") continue
+    var ssh = String(entry.ssh === undefined ? "" : entry.ssh).trim()
+    if (deviceSshError(ssh) !== "" || seen[ssh]) continue
+    seen[ssh] = true
+    list.push({ ssh: ssh, name: typeof entry.name === "string" ? entry.name.trim() : "" })
+  }
+  return list
+}
+
+// Returns { devices, error }: the new list with the device appended, or
+// the unchanged list and the reason it was refused.
+function addDevice(current, ssh, name) {
+  var devices = normalizeDevices(current)
+  var target = String(ssh === undefined || ssh === null ? "" : ssh).trim()
+  var error = deviceSshError(target)
+  if (error === "") {
+    for (var i = 0; i < devices.length; i++) {
+      if (devices[i].ssh === target) error = target + " is already added"
+    }
+  }
+  if (error !== "") return { devices: devices, error: error }
+  return {
+    devices: devices.concat([{ ssh: target, name: String(name === undefined || name === null ? "" : name).trim() }]),
+    error: ""
+  }
+}
+
+function removeDevice(current, ssh) {
+  return normalizeDevices(current).filter(function(d) { return d.ssh !== ssh })
+}
+
+// A device's flight-recorder file, keyed by its destination so two
+// machines never share one. Anything outside [A-Za-z0-9.-] — `_` included —
+// becomes `_` plus its UTF-8 bytes in hex, so the mapping is one-to-one
+// (`a@b` → a_40b, `a_b` → a_5Fb) and never yields a path separator.
+function deviceHistoryFile(ssh) {
+  var escaped = encodeURIComponent(String(ssh))
+    .replace(/[^A-Za-z0-9.%-]/g, function(c) { return "%" + c.charCodeAt(0).toString(16).toUpperCase() })
+    .replace(/%/g, "_")
+  return "history-" + escaped + ".json"
+}
+
+// True once a static/dynamic sample ran to sample.sh's closing ###END;
+// output cut short by a timeout or a dropped ssh link is partial.
+function sampleComplete(text) {
+  var lines = String(text || "").split("\n")
+  for (var i = lines.length - 1; i >= 0; i--) {
+    var line = lines[i].trim()
+    if (line !== "") return line === "###END"
+  }
+  return false
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     METRICS: METRICS,
@@ -2259,6 +2338,12 @@ if (typeof module !== "undefined") {
     barSegments: barSegments,
     barText: barText,
     barLines: barLines,
-    PLACEHOLDER_ICON: PLACEHOLDER_ICON
+    PLACEHOLDER_ICON: PLACEHOLDER_ICON,
+    deviceSshError: deviceSshError,
+    normalizeDevices: normalizeDevices,
+    addDevice: addDevice,
+    removeDevice: removeDevice,
+    deviceHistoryFile: deviceHistoryFile,
+    sampleComplete: sampleComplete
   }
 }

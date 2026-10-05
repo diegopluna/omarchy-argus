@@ -942,6 +942,50 @@ const livePanel = Model.parseSample(execSync("bash " + script + " dynamic panel"
 assert.ok(Array.isArray(livePanel.gpuProcs))
 if (!CI) assert.ok(livePanel.gpuProcs.length > 0, "live DRM clients found")
 
+// ---- SSH devices ----------------------------------------------------------
+assert.deepStrictEqual(Model.normalizeDevices(undefined), [])
+assert.deepStrictEqual(Model.normalizeDevices("pi"), [], "a bare string is not a list")
+assert.deepStrictEqual(Model.normalizeDevices({ length: 1, 0: { ssh: "pi" } }), [{ ssh: "pi", name: "" }],
+  "array-like lists (QML's) are accepted")
+assert.deepStrictEqual(Model.normalizeDevices([
+  { ssh: " pi ", name: " Raspberry Pi " },
+  { ssh: "pi", name: "duplicate" },
+  { ssh: "-oProxyCommand=evil" },
+  { ssh: "two words" },
+  { ssh: "" },
+  "not an object",
+  { ssh: "me@nas" }
+]), [{ ssh: "pi", name: "Raspberry Pi" }, { ssh: "me@nas", name: "" }], "devices normalized")
+assert.strictEqual(Model.deviceSshError("pi"), "")
+assert.ok(Model.deviceSshError("").length > 0, "empty destination refused")
+assert.ok(Model.deviceSshError("-J evil").length > 0, "option-shaped destination refused")
+{
+  const added = Model.addDevice([], "pi", "Raspberry Pi")
+  assert.strictEqual(added.error, "")
+  assert.deepStrictEqual(added.devices, [{ ssh: "pi", name: "Raspberry Pi" }])
+  const dup = Model.addDevice(added.devices, " pi ", "")
+  assert.ok(/already added/.test(dup.error), "duplicate refused")
+  assert.deepStrictEqual(dup.devices, added.devices, "refused add leaves the list alone")
+  assert.deepStrictEqual(Model.removeDevice(added.devices, "pi"), [])
+}
+assert.strictEqual(Model.deviceHistoryFile("pi"), "history-pi.json")
+assert.strictEqual(Model.deviceHistoryFile("me@nas.local"), "history-me_40nas.local.json")
+assert.strictEqual(Model.deviceHistoryFile("../x"), "history-.._2Fx.json", "no path separators")
+assert.notStrictEqual(Model.deviceHistoryFile("a@b"), Model.deviceHistoryFile("a_b"), "escape char can't collide")
+{
+  const targets = ["a@b", "a_b", "a_40b", "a%40b", "a:b", "a/b", "a_2Fb", "héllo", "h_C3_A9llo", "a!b", "a~b", "a*b", "a'b", "a(b"]
+  const files = targets.map(Model.deviceHistoryFile)
+  assert.strictEqual(new Set(files).size, targets.length, "every destination gets its own file")
+  assert.ok(files.every(f => /^history-[A-Za-z0-9._-]+\.json$/.test(f)), "filenames stay in the safe set")
+}
+
+// A sample is trusted only once it ran to the closing marker.
+assert.ok(Model.sampleComplete(staticText), "live static sample is complete")
+assert.ok(Model.sampleComplete(dynamicText), "live dynamic sample is complete")
+assert.ok(Model.sampleComplete("###STAT\ncpu 1 2 3\n###END\n\n"), "trailing blank lines are fine")
+assert.ok(!Model.sampleComplete(dynamicText.slice(0, dynamicText.indexOf("###MEM"))), "cut-off sample is partial")
+assert.ok(!Model.sampleComplete(""), "empty output is partial")
+
 // ---- Fixture corpus -------------------------------------------------------
 // Every file in tests/fixtures/ is a scrubbed `sample.sh` capture from a
 // real machine (see tests/make-fixture.sh). Each one must parse cleanly

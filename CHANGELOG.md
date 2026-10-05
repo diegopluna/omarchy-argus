@@ -7,6 +7,14 @@ follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Watch other machines over SSH.** SETUP gains a DEVICES section: add
+  an ssh destination such as `pi` or `user@host` and the panel gets a
+  machine switch under its title (`[` / `]` on the keyboard). Devices run
+  the same `sample.sh` over a multiplexed ssh connection, so nothing is
+  installed on them. Each keeps its own history file, unreachable devices
+  are marked offline with the reason and retried every 30 seconds, and the
+  bar and alerts stay on this machine. New IPC: `hosts`, `host`,
+  `addDevice`, `removeDevice`.
 - **Clicking a bar metric opens its tab.** Each metric in the bar is its
   own button: clicking RAM opens MEM, a temperature or load opens CPU,
   and so on, ahead of the remembered or urgent tab. With the panel open,
