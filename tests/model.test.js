@@ -502,11 +502,15 @@ assert.strictEqual(segs[1].urgent, false)
 // icon so the panel stays reachable.
 assert.strictEqual(Model.barText([], barData), Model.PLACEHOLDER_ICON)
 assert.strictEqual(Model.barText(["gputemp"], { gpu: null }), Model.PLACEHOLDER_ICON)
-assert.deepStrictEqual(Model.barLines([], barData), [{ text: Model.PLACEHOLDER_ICON, urgent: false }])
+// The vertical bar's placeholder is the widget's call: barLines stays empty,
+// including when only the rate metrics it skips are selected.
+assert.deepStrictEqual(Model.barLines([], barData), [])
+assert.deepStrictEqual(Model.barLines(["net", "io"], barData), [])
 assert.ok(Model.barText(["cpu"], barData) !== Model.PLACEHOLDER_ICON)
 const lines = Model.barLines(["cpu", "net", "io", "bat"], Object.assign({}, barData, { battery: summary }))
 assert.strictEqual(lines.length, 4, "net and io skipped, cpu 2 lines + bat 2 lines")
 assert.strictEqual(lines[3].text, "76%")
+assert.deepStrictEqual(lines.map(l => l.key), ["cpu", "cpu", "bat", "bat"], "lines carry their metric for click routing")
 
 // Show-list editing: order preserved, moves clamp at the edges.
 const toggled = Model.toggleShow(["cpu", "ram"], "disk")

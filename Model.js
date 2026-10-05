@@ -2093,8 +2093,9 @@ function barText(showKeys, data) {
   return parts.length > 0 ? parts.join("  ") : PLACEHOLDER_ICON
 }
 
-// Vertical bar lines: { text, urgent } per line, icon line then value line
-// per metric. Rate metrics (net, io) are too wide sideways and are skipped.
+// Vertical bar lines: { key, text, urgent } per line, icon line then value
+// line per metric. Rate metrics (net, io) are too wide sideways and are
+// skipped, so this can be empty while barSegments is not.
 function barLines(showKeys, data, th) {
   var lines = []
   for (var i = 0; i < showKeys.length; i++) {
@@ -2104,14 +2105,14 @@ function barLines(showKeys, data, th) {
     if (value === "") continue
     var urgent = metricUrgent(metric.key, data, th)
     if (metric.key === "bat") {
-      lines.push({ text: batteryIcon(data.battery.pct, data.battery.charging), urgent: urgent })
-      lines.push({ text: fmtPct(data.battery.pct), urgent: urgent })
+      lines.push({ key: metric.key, text: batteryIcon(data.battery.pct, data.battery.charging), urgent: urgent })
+      lines.push({ key: metric.key, text: fmtPct(data.battery.pct), urgent: urgent })
       continue
     }
-    if (metric.icon !== "") lines.push({ text: metric.icon, urgent: urgent })
-    lines.push({ text: value, urgent: urgent })
+    if (metric.icon !== "") lines.push({ key: metric.key, text: metric.icon, urgent: urgent })
+    lines.push({ key: metric.key, text: value, urgent: urgent })
   }
-  return lines.length > 0 ? lines : [{ text: PLACEHOLDER_ICON, urgent: false }]
+  return lines
 }
 
 if (typeof module !== "undefined") {

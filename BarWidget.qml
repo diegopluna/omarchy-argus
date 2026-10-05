@@ -11,7 +11,7 @@ import "Model.js" as Model
 // shell.json. Bar segments turn the bar's urgent color past configurable
 // thresholds.
 //
-// Bar button — left click: panel · right click: btop · middle click: refresh
+// Bar button — left click: panel on that metric's tab · right click: btop · middle click: refresh
 // Panel — h/l or ←/→: switch tab · j/k or ↑/↓: scroll · r: refresh · Esc: close
 Panel {
   id: root
@@ -39,9 +39,6 @@ Panel {
   readonly property var barSegs: Service.ready ? Model.barSegments(shownKeys, Service.barData, thresholds) : []
   // The panel's always-visible vitals, independent of the bar selection.
   readonly property var vitalSegs: Service.ready ? Model.barSegments(Model.VITAL_KEYS, Service.barData, thresholds) : []
-  // The placeholder icon also covers the not-yet-sampled window right after
-  // the shell starts, so the widget is clickable from the first frame.
-  readonly property bool placeholderOnly: barSegs.length === 0
 
   // "#aarrggbb" → "#rrggbb": styled-text font tags reject the alpha form.
   // Still used by SpanCaption, which is a Text of its own with an explicit
@@ -51,30 +48,38 @@ Panel {
     return s.length === 9 ? "#" + s.slice(3) : s
   }
 
-  readonly property bool anyUrgent: {
-    for (var i = 0; i < barSegs.length; i++) if (barSegs[i].urgent) return true
-    return false
+  readonly property bool vertical: bar ? bar.vertical : false
+  readonly property var verticalLines: Service.ready ? Model.barLines(shownKeys, Service.barData, thresholds) : []
+
+  // One bar button per rendered metric, so a click knows which tab to open.
+  // Joined into a string because a string only signals when it actually
+  // changes: the buttons rebuild when the metric set does, not every tick.
+  readonly property string barKeyList: {
+    var source = vertical ? verticalLines : barSegs
+    var keys = []
+    for (var i = 0; i < source.length; i++) {
+      if (keys.indexOf(source[i].key) === -1) keys.push(source[i].key)
+    }
+    return keys.join(",")
   }
 
-  // Always plain, never markup. WidgetButton's label is Text.PlainText, so a
-  // <font> tag renders as the literal characters "<font color=...>" in the bar
-  // rather than colouring anything. Per-segment colour is painted by segmentRow
-  // below instead — the same approach the vertical bar already takes.
-  //
-  // This string stays the button's `text` even while segmentRow is what shows,
-  // because WidgetButton derives implicitWidth and hasVisualContent from it.
-  readonly property string displayText: {
-    if (placeholderOnly) return Model.PLACEHOLDER_ICON
-    var parts = []
-    for (var i = 0; i < barSegs.length; i++) parts.push(barSegs[i].text)
-    return parts.join(segmentGap)
-  }
+  // The placeholder icon also covers the not-yet-sampled window right after
+  // the shell starts, so the widget is clickable from the first frame. It
+  // also stands in on a vertical bar showing only net/io, which it skips.
+  readonly property bool placeholderOnly: barKeyList === ""
 
   readonly property string segmentGap: "  "
 
-  readonly property var verticalLines: Service.ready
-    ? Model.barLines(shownKeys, Service.barData, thresholds)
-    : [{ text: Model.PLACEHOLDER_ICON, urgent: false }]
+  function segmentFor(key) {
+    for (var i = 0; i < barSegs.length; i++) if (barSegs[i].key === key) return barSegs[i]
+    return null
+  }
+
+  function linesFor(key) {
+    var lines = []
+    for (var i = 0; i < verticalLines.length; i++) if (verticalLines[i].key === key) lines.push(verticalLines[i])
+    return lines
+  }
 
   // Row models must not rebuild their delegates every tick, so they hang
   // off these stable booleans instead of the per-tick Service arrays —
@@ -372,7 +377,27 @@ Panel {
     persistPluginSetting("hiddenSensors", Model.toggleHiddenSensor(setting("hiddenSensors", []), key))
   }
 
-  // The tab that explains a bar segment's urgency.
+  // Set by a bar click just before the panel opens, so the clicked metric's
+  // tab beats both the remembered one and an urgent one.
+  property string requestedTab: ""
+
+  // Left click on a bar metric: open the panel on that metric's tab. With
+  // the panel already open, a different metric switches tabs instead of
+  // closing it. The placeholder eye leads to SETUP, where metrics are picked.
+  function openFromBar(key) {
+    var target = key === "placeholder" ? "SETUP" : tabForKey(key)
+    if (!hasTab(target)) target = ""
+    if (opened) {
+      if (target !== "" && target !== tab) tab = target
+      else close()
+      return
+    }
+    requestedTab = target
+    open()
+  }
+
+  // The tab that explains a bar segment's urgency, and the one a click on
+  // the segment opens.
   function tabForKey(key) {
     switch (key) {
       case "cpu": case "cputemp": case "load": return "CPU"
@@ -468,19 +493,25 @@ Panel {
     return rows
   }
 
-  implicitWidth: button.implicitWidth
-  implicitHeight: button.implicitHeight
+  implicitWidth: segmentStrip.implicitWidth
+  implicitHeight: segmentStrip.implicitHeight
 
   onOpenedChanged: {
     if (opened) {
       Service.panelOpened()
-      // Reopen where the user left off; an urgent metric still wins.
-      if (hasTab(Service.lastTab)) tab = Service.lastTab
-      // Land on the tab that explains the problem, if there is one.
-      for (var i = 0; i < barSegs.length; i++) {
-        if (!barSegs[i].urgent) continue
-        var target = tabForKey(barSegs[i].key)
-        if (target !== "" && tabs.indexOf(target) !== -1) { tab = target; break }
+      if (requestedTab !== "") {
+        // A click on a bar metric asked for its own tab.
+        tab = requestedTab
+        requestedTab = ""
+      } else {
+        // Reopen where the user left off; an urgent metric still wins.
+        if (hasTab(Service.lastTab)) tab = Service.lastTab
+        // Land on the tab that explains the problem, if there is one.
+        for (var i = 0; i < barSegs.length; i++) {
+          if (!barSegs[i].urgent) continue
+          var target = tabForKey(barSegs[i].key)
+          if (target !== "" && tabs.indexOf(target) !== -1) { tab = target; break }
+        }
       }
       Qt.callLater(function() { keyCatcher.forceActiveFocus() })
     } else {
@@ -556,112 +587,125 @@ Panel {
     }
   }
 
-  WidgetButton {
-    id: button
-    anchors.fill: parent
-    bar: root.bar
-    text: root.bar && root.bar.vertical ? "" : root.displayText
-    // The label handles the common case; segmentRow takes over only when a
-    // threshold is crossed and one segment must differ in colour from the rest.
-    labelVisible: !(root.bar && root.bar.vertical) && !root.placeholderOnly && !root.anyUrgent
-    hasVisualContent: root.bar && root.bar.vertical ? root.verticalLines.length > 0 : text !== ""
-    fixedWidth: !(root.bar && root.bar.vertical) && root.placeholderOnly ? Style.bar.iconSlot : -1
-    fixedHeight: root.bar && root.bar.vertical ? root.verticalLines.length * Style.bar.iconSlot : -1
-    tooltipText: Service.ready
-      ? Model.hoverText(root.enabledHover, Service.barData, Service.host, Service.uptimeSec)
-      : "Argus"
+  // Measured rather than guessed: the gap between segments has to match what
+  // a single label would have painted for segmentGap.
+  TextMetrics {
+    id: gapMetrics
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.body
+    text: root.segmentGap
+  }
 
-    onPressed: function(b) {
-      if (b === Qt.RightButton) { if (root.bar) root.bar.run("omarchy-launch-or-focus-tui btop") }
-      else if (b === Qt.MiddleButton) root.refreshNow()
-      else root.toggle()
-    }
+  // One WidgetButton per metric, so a click opens that metric's tab. Inner
+  // edges split the gap between neighbours and outer edges keep the usual
+  // button margin, so the strip is as wide as one label and clickable end
+  // to end.
+  Grid {
+    id: segmentStrip
+    columns: root.vertical ? 1 : Math.max(1, segmentRepeater.count)
 
-    // A bare Nerd Font glyph has asymmetric side bearings, so the plain text
-    // label would paint it visibly off-center; when only the placeholder icon
-    // shows, render through OpticalGlyph the way BarIconButton does.
-    OpticalGlyph {
-      id: placeholderEye
-      visible: !(root.bar && root.bar.vertical) && root.placeholderOnly
-      anchors.centerIn: parent
-      width: Style.bar.iconCanvas
-      height: Style.bar.iconCanvas
-      text: Model.PLACEHOLDER_ICON
-      fontFamily: button.fontFamily
-      fontSize: Style.bar.iconFont
-      color: button.foreground
+    Repeater {
+      id: segmentRepeater
+      model: root.placeholderOnly ? ["placeholder"] : root.barKeyList.split(",")
 
-      // Even the ever-watchful eye blinks now and then.
-      property real blinkY: 1
-      transform: Scale {
-        origin.y: placeholderEye.height / 2
-        yScale: placeholderEye.blinkY
-      }
+      WidgetButton {
+        id: segment
+        required property string modelData
+        required property int index
 
-      Timer {
-        running: placeholderEye.visible
-        repeat: true
-        interval: 6000
-        onTriggered: {
-          blinkAnim.restart()
-          interval = 5000 + Math.round(Math.random() * 9000)
+        readonly property bool isPlaceholder: modelData === "placeholder"
+        readonly property var seg: root.vertical || isPlaceholder ? null : root.segmentFor(modelData)
+        readonly property var lines: root.vertical && !isPlaceholder ? root.linesFor(modelData) : []
+        readonly property real leftPad: index === 0 ? scaledHorizontalMargin : gapMetrics.advanceWidth / 2
+        readonly property real rightPad: index === segmentRepeater.count - 1 ? scaledHorizontalMargin : gapMetrics.advanceWidth / 2
+
+        bar: root.bar
+        labelVisible: false
+        hasVisualContent: true
+        fixedWidth: root.vertical ? -1
+          : isPlaceholder ? Style.bar.iconSlot
+          : leftPad + segmentText.implicitWidth + rightPad
+        fixedHeight: root.vertical ? Math.max(1, lines.length) * Style.bar.iconSlot : -1
+        tooltipText: Service.ready
+          ? Model.hoverText(root.enabledHover, Service.barData, Service.host, Service.uptimeSec)
+          : "Argus"
+
+        onPressed: function(b) {
+          if (b === Qt.RightButton) { if (root.bar) root.bar.run("omarchy-launch-or-focus-tui btop") }
+          else if (b === Qt.MiddleButton) root.refreshNow()
+          else root.openFromBar(segment.modelData)
         }
-      }
 
-      SequentialAnimation {
-        id: blinkAnim
-        NumberAnimation { target: placeholderEye; property: "blinkY"; to: 0.08; duration: 70 }
-        NumberAnimation { target: placeholderEye; property: "blinkY"; to: 1; duration: 110 }
-      }
-    }
+        // A bare Nerd Font glyph has asymmetric side bearings, so a plain text
+        // label would paint it visibly off-center; the placeholder icon goes
+        // through OpticalGlyph the way BarIconButton does.
+        OpticalGlyph {
+          id: placeholderEye
+          visible: segment.isPlaceholder
+          anchors.centerIn: parent
+          width: Style.bar.iconCanvas
+          height: Style.bar.iconCanvas
+          text: Model.PLACEHOLDER_ICON
+          fontFamily: segment.fontFamily
+          fontSize: Style.bar.iconFont
+          color: segment.foreground
 
-    // Measured rather than guessed: the gap has to match what the label would
-    // have painted for segmentGap, or the widget changes width the moment a
-    // threshold is crossed.
-    TextMetrics {
-      id: gapMetrics
-      font.family: button.fontFamily
-      font.pixelSize: button.fontSize
-      text: root.segmentGap
-    }
+          // Even the ever-watchful eye blinks now and then.
+          property real blinkY: 1
+          transform: Scale {
+            origin.y: placeholderEye.height / 2
+            yScale: placeholderEye.blinkY
+          }
 
-    Row {
-      id: segmentRow
-      visible: !(root.bar && root.bar.vertical) && !root.placeholderOnly && root.anyUrgent
-      anchors.centerIn: parent
-      spacing: gapMetrics.width
+          Timer {
+            running: placeholderEye.visible
+            repeat: true
+            interval: 6000
+            onTriggered: {
+              blinkAnim.restart()
+              interval = 5000 + Math.round(Math.random() * 9000)
+            }
+          }
 
-      Repeater {
-        model: root.barSegs
+          SequentialAnimation {
+            id: blinkAnim
+            NumberAnimation { target: placeholderEye; property: "blinkY"; to: 0.08; duration: 70 }
+            NumberAnimation { target: placeholderEye; property: "blinkY"; to: 1; duration: 110 }
+          }
+        }
 
         Text {
-          required property var modelData
+          id: segmentText
+          visible: segment.seg !== null
+          x: segment.leftPad
+          anchors.verticalCenter: parent.verticalCenter
           textFormat: Text.PlainText
-          text: modelData.text
-          color: modelData.urgent ? root.urgent : button.foreground
-          font.family: button.fontFamily
-          font.pixelSize: button.fontSize
+          text: segment.seg ? segment.seg.text : ""
+          color: segment.seg && segment.seg.urgent ? root.urgent : segment.foreground
+          font.family: segment.fontFamily
+          font.pixelSize: segment.fontSize
           renderType: Text.NativeRendering
-          verticalAlignment: Text.AlignVCenter
         }
-      }
-    }
 
-    Column {
-      visible: root.bar && root.bar.vertical
-      anchors.fill: parent
+        Column {
+          anchors.fill: parent
 
-      Repeater {
-        model: root.verticalLines
+          Repeater {
+            // A count, not the per-tick array, so the glyphs aren't rebuilt
+            // every sample.
+            model: segment.lines.length
 
-        OpticalGlyph {
-          required property var modelData
-          width: button.width
-          height: Style.bar.iconSlot
-          text: modelData.text
-          fontFamily: button.fontFamily
-          fontSize: modelData.text.length > 3 ? button.fontSize * 0.85 : button.fontSize
-          color: modelData.urgent ? root.urgent : button.foreground
+            OpticalGlyph {
+              required property int index
+              readonly property var line: segment.lines[index] || { text: "", urgent: false }
+              width: segment.width
+              height: Style.bar.iconSlot
+              text: line.text
+              fontFamily: segment.fontFamily
+              fontSize: line.text.length > 3 ? segment.fontSize * 0.85 : segment.fontSize
+              color: line.urgent ? root.urgent : segment.foreground
+            }
+          }
         }
       }
     }
@@ -669,7 +713,7 @@ Panel {
 
   KeyboardPanel {
     id: panel
-    anchorItem: button
+    anchorItem: segmentStrip
     owner: root
     bar: root.bar
     open: root.opened

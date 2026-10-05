@@ -84,7 +84,7 @@ runnable tasks than cores, memory reclaim, saturated disk).
 
 ## Interactions
 
-- Bar button: left click opens the panel, middle click refreshes, right click launches btop
+- Bar button: left click opens the panel on the clicked metric's tab, middle click refreshes, right click launches btop
 - Panel: `h`/`l` or ←/→ switch tabs, `1`–`9` or a tab's first letter jump straight to it, `j`/`k` or ↑/↓ scroll, `r` refreshes, `Esc` closes
 - PROC tab: `/` focuses the filter, `j`/`k` walk rows, `Enter` expands the row, `x` terminates it (confirmed), column headers sort
 - Reopening the panel lands on the tab you left; a currently-urgent metric overrides that and lands on the tab that explains it
