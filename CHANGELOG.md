@@ -4,7 +4,7 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.3.0] — 2026-11-17
 
 ### Added
 - **Watch other machines over SSH.** SETUP gains a DEVICES section: add
@@ -35,6 +35,19 @@ follow [Semantic Versioning](https://semver.org/).
   Host, uptime, any bar metric, load and battery can each be toggled;
   the choice persists as `hover` in `shell.json`. The default matches
   the previous tooltip, and turning everything off hides it.
+
+### Changed
+- **The panel is built the first time it opens, not at shell start.**
+  Its whole tree (tabs, process table, core grid, sparklines, alert log)
+  used to be built by every bar on every monitor when the shell started,
+  and every theme change re-evaluated all of its bindings even while the
+  panel was closed. It now sits in a `Loader` that turns on with the
+  first open and then stays on, so only the monitor where it was opened
+  builds it, and the tab, scroll position and process filter still
+  survive a close. On three monitors, a theme switch went from ~200 ms
+  of main-thread work to ~22 ms with the panel never opened, and from
+  ~700 ms to ~220 ms after opening it once. A latched `Loader` rather
+  than `KeyboardPanel.content` keeps this working on Omarchy 4.0.x.
 
 ### Fixed
 - **ARM machines showed no CPU name, and the Raspberry Pi no CPU
