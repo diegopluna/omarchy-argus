@@ -32,7 +32,10 @@ CPU usage, CPU temperature, RAM usage, GPU usage, GPU temperature, VRAM
 usage, disk usage, disk I/O, network throughput, load average, and battery
 (shown only on machines that have one). Pick any subset and arrange the
 order in the panel's **SETUP** tab; the choice persists to
-`~/.config/omarchy/shell.json`.
+`~/.config/omarchy/shell.json`. Each metric is its own bar button, and
+network throughput can be shown as one combined up+down rate instead of
+separate download and upload rates (SETUP → PANEL → *Combine network
+up/down*).
 
 ## Panel tabs
 
@@ -48,7 +51,7 @@ order in the panel's **SETUP** tab; the choice persists to
 - **PWR** — measured power draw per source: CPU package and friends via RAPL (with an honest hint when the kernel keeps the counters root-only — see Power below), every GPU, battery discharge, draw sparklines with session peaks, and session energy totals in Wh
 - **GAME** — the in-game HUD's control room: pick which metrics MangoHud shows (FPS, frametime graph, CPU/GPU stats, VRAM…), give them custom labels, set position, font size, opacity, compact mode, the toggle hotkey — and match the overlay to your Omarchy theme. Changes apply live to running games
 - **ALERTS** — every alert with its opt-in toggle and inline threshold stepper (all off by default), the per-sensor alerts armed from the TEMP tab, and the fired-alert log with context snapshots
-- **SETUP** — also opened from the gear icon next to refresh: toggles and reorder arrows for which metrics the bar shows, the Home-tile picker, panel settings (°C/°F, refresh interval), and Argus's own measured sampling cost
+- **SETUP** — also opened from the gear icon next to refresh: toggles and reorder arrows for which metrics the bar shows, the Home-tile picker, what the bar button's hover tooltip shows (SHOW ON HOVER), the DEVICES list of other machines (see [Other machines over SSH](#other-machines-over-ssh)), panel settings (°C/°F, combined network rate, showing the SETUP and btop buttons, refresh interval), and Argus's own measured sampling cost
 
 A watch row under the host name keeps every vital — CPU, RAM, CPU/GPU
 temperature, disk, battery — visible on every tab. A vital turns urgent
@@ -84,8 +87,9 @@ runnable tasks than cores, memory reclaim, saturated disk).
 
 ## Interactions
 
-- Bar button: left click opens the panel on the clicked metric's tab, middle click refreshes, right click launches btop
-- Panel: `h`/`l` or ←/→ switch tabs, `1`–`9` or a tab's first letter jump straight to it, `j`/`k` or ↑/↓ scroll, `r` refreshes, `Esc` closes
+- Bar buttons: left click opens the panel on the clicked metric's tab (RAM → MEM, a temperature or load → CPU, and so on), middle click refreshes, right click launches btop. With the panel open, clicking a different metric switches tabs instead of closing it. The placeholder eye (shown when no metric is selected) opens SETUP
+- Panel: `h`/`l` or ←/→ switch tabs, `1`–`9` or a tab's first letter jump straight to it, `j`/`k` or ↑/↓ scroll, `[`/`]` switch machine (once [SSH devices](#other-machines-over-ssh) are added), `r` refreshes, `Esc` closes
+- Panel header: buttons for Open btop, SETUP, and refresh (the first two can be hidden in SETUP → PANEL)
 - PROC tab: `/` focuses the filter, `j`/`k` walk rows, `Enter` expands the row, `x` terminates it (confirmed), column headers sort
 - Reopening the panel lands on the tab you left; a currently-urgent metric overrides that and lands on the tab that explains it
 
@@ -338,13 +342,13 @@ echo nct6775 | sudo tee /etc/modules-load.d/nct6775.conf
 ## IPC
 
 ```bash
-omarchy-shell io.github.diegopluna.argus toggle
+omarchy-shell io.github.diegopluna.argus toggle    # also: open, close (aliases: show, hide)
 omarchy-shell io.github.diegopluna.argus refresh
 omarchy-shell io.github.diegopluna.argus tab TEMP
 omarchy-shell io.github.diegopluna.argus span 24h  # sparkline span: 2m|1h|24h
 omarchy-shell io.github.diegopluna.argus metrics   # current snapshot of this machine as JSON, for scripts
 omarchy-shell io.github.diegopluna.argus hosts     # machines in the switch, as JSON
-omarchy-shell io.github.diegopluna.argus host next # or prev, a name, or an ssh destination
+omarchy-shell io.github.diegopluna.argus host next # or prev, local, a name, or an ssh destination
 omarchy-shell io.github.diegopluna.argus addDevice pi "Raspberry Pi"
 omarchy-shell io.github.diegopluna.argus removeDevice pi
 ```
